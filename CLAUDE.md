@@ -20,7 +20,10 @@ Portfolio project: a local app where divers upload underwater photos or dive vid
 - **Baseline:** zero-shot CLIP with text prompts per category.
 - **Training data:** internet images. Mostly iNaturalist (API), with species mapped to categories by taxonomy. I source a scenery dataset separately. Non-underwater photos get filtered out; an AI/agent filter is fine for training data.
 - **Test data:** frames extracted from my own dive videos, a balanced random sample (~30–60 per category) spread across videos, labeled by hand in a Streamlit labeling page.
-- **Raw footage:** stays on the external drive `D:\` (`/mnt/d` in WSL, ~10 hours, ~250 GB of video plus a few JPG photos). Never copy it into the repo or WSL. `frames.py` reads from the drive and writes only kept frames to `data/`. C: has limited space and the WSL disk lives on C:.
+- **Raw footage:** stays on the external drive `D:\` (`/mnt/d` in WSL). Never copy it into the repo or WSL. `frames.py` reads from the drive and writes only kept frames to `data/`. C: has limited space and the WSL disk lives on C:.
+  - The originals on D: are my only copies: **never modify, move, or delete anything there.** Only write to `D:\underwater_tagger_extracted\`.
+  - Sources (GoPro files only, names starting with `G`; `PXL_*` and date-named files are phone media): `Videos\Azores_scuba`, `Videos\Bahamas diving`, `Videos\Mexico`, `Videos\Philippines diving`, plus `D:\underwater_tagger_extracted\philippines_gopro\` (unique clips extracted from `Pictures\PhilippinesTaiwanPhotos.zip`). `Azores_scuba\Mobula Ray.zip` duplicates the `Mobula Ray` folder and is skipped. ~9 hours of unique video plus ~94 GoPro JPGs.
+- **Unusable frames** (fogged lens, on the boat, at the surface, black) are skipped during labeling, not labeled `scenery`.
 - **Order:** classification first, then subject-aware color correction built on it.
 - **Subject location:** Grad-CAM attention maps from the classifier (no bounding-box labeling).
 - **Frontend:** Streamlit now, React after Nov 23.
@@ -87,7 +90,7 @@ underwater_media_tagger/
 ### Week 1 — Foundations (Oct 29 – Nov 4)
 - [ ] Repo setup: uv environment (CUDA PyTorch), ruff, pytest, basic tests
 - [ ] GitHub Actions CI: ruff + pytest on every push
-- [ ] `frames.py`: sample every 1–2s, drop blurry frames (Laplacian variance), drop near-duplicates (perceptual hash)
+- [ ] `frames.py`: keyframes every 2s, drop clearly ruined frames (sharpest-tile Laplacian variance < 15), drop near-duplicates (thumbnail correlation ≥ 0.90 with last kept frame)
 - [ ] Extract frames from all my dive videos on `/mnt/d` into `data/frames/`
 - [ ] SQLite schema for images, labels, predictions
 - [ ] Streamlit: upload photos/videos, gallery view
@@ -96,7 +99,7 @@ underwater_media_tagger/
 ### Week 2 — My own model (Nov 5 – Nov 11)
 - [ ] `collect_inat.py`: iNaturalist images for the animal categories (target ~40–100 per class), filter out non-underwater photos
 - [ ] Add my scenery dataset; source diver images
-- [ ] Streamlit labeling page (one frame, 7 buttons, keyboard shortcuts); hand-label test frames into `data/test/`
+- [ ] Streamlit labeling page (one frame, 7 category buttons plus "unusable", keyboard shortcuts); hand-label test frames into `data/test/`
 - [ ] Fine-tune ConvNeXt-Tiny locally with augmentation (color shift, blur)
 - [ ] `evaluate.py`: baseline vs. fine-tuned on the test set, confusion matrix
 - [ ] FastAPI wrapper around `tagger/`
@@ -128,6 +131,7 @@ underwater_media_tagger/
 - How the blurry shark frame is classified
 - Cases where Grad-CAM misses the subject
 - Why `no_subject` and `reef_scenery` were merged into `scenery`
+- Frame filter calibration: whole-image Laplacian variance scored sharp mobula rays in open blue as low as fogged-lens frames, so sharpness uses the sharpest tile instead; pHash was too noisy in low-contrast water, so duplicates use thumbnail correlation (contact sheets in `data/calibration/`)
 
 ## Out of scope (until after Nov 23)
 
