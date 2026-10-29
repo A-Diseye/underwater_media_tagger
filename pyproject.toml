@@ -8,7 +8,7 @@ dependencies = [
     "numpy>=2.0",
     "opencv-python-headless>=4.10",
     "pillow>=11.0",
-    "imagehash>=4.3",
+    "av>=19.0.2",
 ]
 
 [dependency-groups]
