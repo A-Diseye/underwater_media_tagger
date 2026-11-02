@@ -1,0 +1,187 @@
+"""SQLite storage for media, images, hand labels, and model predictions.
+
+Tables:
+- media: one row per source file (dive clip, GoPro photo, or app upload)
+- images: one row per frame or photo the model sees
+- labels: hand labels only; keyed by (image, source) so app corrections never overwrite
+  ground-truth test labels
+- predictions: one row per (image, model), with all category scores kept as JSON
+"""
+
+from __future__ import annotations
+
+import csv
+import json
+import sqlite3
+from pathlib import Path
+
+from tagger import CATEGORIES
+
+DEFAULT_DB = Path("data/tagger.db")
+
+UNUSABLE = "unusable"
+LABEL_SOURCES = ("test_labeling", "manual_correction")
+
+SCHEMA = f"""
+CREATE TABLE IF NOT EXISTS media (
+    id          INTEGER PRIMARY KEY,
+    path        TEXT NOT NULL,
+    kind        TEXT NOT NULL CHECK (kind IN ('video', 'photo')),
+    trip        TEXT,
+    fingerprint TEXT NOT NULL UNIQUE,
+    created_at  TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS images (
+    id         INTEGER PRIMARY KEY,
+    media_id   INTEGER NOT NULL REFERENCES media(id),
+    file_path  TEXT NOT NULL UNIQUE,
+    t_s        REAL,  -- seconds into the clip; NULL for photos
+    sharpness  REAL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS labels (
+    image_id   INTEGER NOT NULL REFERENCES images(id),
+    source     TEXT NOT NULL CHECK (source IN {LABEL_SOURCES!r}),
+    label      TEXT NOT NULL,
+    labeled_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (image_id, source)
+);
+
+CREATE TABLE IF NOT EXISTS predictions (
+    image_id   INTEGER NOT NULL REFERENCES images(id),
+    model      TEXT NOT NULL,
+    label      TEXT NOT NULL,
+    confidence REAL NOT NULL,
+    scores     TEXT NOT NULL,  -- JSON object: category -> probability, for all categories
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (image_id, model)
+);
+
+CREATE INDEX IF NOT EXISTS images_media ON images(media_id);
+"""
+
+
+def connect(db_path: Path | str = DEFAULT_DB) -> sqlite3.Connection:
+    """Open the database, creating tables if needed. Rows behave like dicts."""
+    if str(db_path) != ":memory:":
+        Path(db_path).parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    conn.executescript(SCHEMA)
+    return conn
+
+
+def add_media(
+    conn: sqlite3.Connection, path: str, kind: str, fingerprint: str, trip: str | None = None
+) -> int:
+    """Insert a source file, or return the existing id if this content is already stored."""
+    conn.execute(
+        "INSERT OR IGNORE INTO media (path, kind, trip, fingerprint) VALUES (?, ?, ?, ?)",
+        (path, kind, trip, fingerprint),
+    )
+    row = conn.execute("SELECT id FROM media WHERE fingerprint = ?", (fingerprint,)).fetchone()
+    return row["id"]
+
+
+def add_image(
+    conn: sqlite3.Connection,
+    media_id: int,
+    file_path: str,
+    t_s: float | None = None,
+    sharpness: float | None = None,
+) -> int:
+    """Insert a frame or photo, or return the existing id for this file path."""
+    conn.execute(
+        "INSERT OR IGNORE INTO images (media_id, file_path, t_s, sharpness) VALUES (?, ?, ?, ?)",
+        (media_id, file_path, t_s, sharpness),
+    )
+    row = conn.execute("SELECT id FROM images WHERE file_path = ?", (file_path,)).fetchone()
+    return row["id"]
+
+
+def set_label(conn: sqlite3.Connection, image_id: int, label: str, source: str) -> None:
+    """Record a hand label (one of the categories, or 'unusable'). Re-labeling replaces it."""
+    if label not in (*CATEGORIES, UNUSABLE):
+        raise ValueError(f"unknown label: {label!r}")
+    if source not in LABEL_SOURCES:
+        raise ValueError(f"unknown label source: {source!r}")
+    conn.execute(
+        """
+        INSERT INTO labels (image_id, source, label) VALUES (?, ?, ?)
+        ON CONFLICT (image_id, source)
+        DO UPDATE SET label = excluded.label, labeled_at = CURRENT_TIMESTAMP
+        """,
+        (image_id, source, label),
+    )
+
+
+def add_prediction(
+    conn: sqlite3.Connection, image_id: int, model: str, scores: dict[str, float]
+) -> None:
+    """Store a model's scores for every category; the top score becomes label + confidence."""
+    if set(scores) != set(CATEGORIES):
+        raise ValueError(f"scores must cover exactly {CATEGORIES}, got {sorted(scores)}")
+    label = max(scores, key=scores.get)
+    conn.execute(
+        """
+        INSERT INTO predictions (image_id, model, label, confidence, scores)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT (image_id, model) DO UPDATE SET
+            label = excluded.label, confidence = excluded.confidence,
+            scores = excluded.scores, created_at = CURRENT_TIMESTAMP
+        """,
+        (image_id, model, label, float(scores[label]), json.dumps(scores)),
+    )
+
+
+def evaluation_rows(conn: sqlite3.Connection, model: str) -> list[sqlite3.Row]:
+    """Test-set images with both a usable hand label and a prediction from `model`.
+
+    Each row has image_id, file_path, true_label, predicted, confidence, and scores (dict).
+    """
+    rows = conn.execute(
+        """
+        SELECT i.id AS image_id, i.file_path, l.label AS true_label,
+               p.label AS predicted, p.confidence, p.scores
+        FROM images i
+        JOIN labels l ON l.image_id = i.id AND l.source = 'test_labeling'
+        JOIN predictions p ON p.image_id = i.id AND p.model = ?
+        WHERE l.label != ?
+        ORDER BY i.id
+        """,
+        (model, UNUSABLE),
+    ).fetchall()
+    return [{**dict(r), "scores": json.loads(r["scores"])} for r in rows]
+
+
+def import_manifest(conn: sqlite3.Connection, frames_dir: Path) -> int:
+    """Load kept frames from frames.py output (manifest.csv + done.txt). Safe to re-run.
+
+    Returns the number of newly added images.
+    """
+    from tagger.frames import DONE, MANIFEST
+
+    with open(frames_dir / DONE) as f:
+        fingerprints = {
+            path: fp
+            for fp, path in (line.rstrip("\n").split("\t", 1) for line in f if line.strip())
+        }
+    before = conn.execute("SELECT COUNT(*) FROM images").fetchone()[0]
+    with open(frames_dir / MANIFEST, newline="") as f, conn:
+        for row in csv.DictReader(f):
+            if row["decision"] != "kept":
+                continue
+            media_id = add_media(
+                conn, row["source"], row["kind"], fingerprints[row["source"]], row["trip"]
+            )
+            add_image(
+                conn,
+                media_id,
+                str(frames_dir / row["frame_path"]),
+                t_s=float(row["t_s"]) if row["kind"] == "video" else None,
+                sharpness=float(row["sharpness"]),
+            )
+    return conn.execute("SELECT COUNT(*) FROM images").fetchone()[0] - before
