@@ -157,6 +157,79 @@ def evaluation_rows(conn: sqlite3.Connection, model: str) -> list[sqlite3.Row]:
     return [{**dict(r), "scores": json.loads(r["scores"])} for r in rows]
 
 
+def delete_media(conn: sqlite3.Connection, media_id: int) -> list[str]:
+    """Delete a source file's rows: predictions, labels, images, then the media row.
+
+    Returns the deleted images' file paths so the caller can remove the files.
+    """
+    image_rows = conn.execute("SELECT id, file_path FROM images WHERE media_id = ?", (media_id,))
+    images = image_rows.fetchall()
+    ids = [r["id"] for r in images]
+    marks = ", ".join("?" * len(ids))
+    with conn:
+        if ids:
+            conn.execute(f"DELETE FROM predictions WHERE image_id IN ({marks})", ids)
+            conn.execute(f"DELETE FROM labels WHERE image_id IN ({marks})", ids)
+            conn.execute(f"DELETE FROM images WHERE id IN ({marks})", ids)
+        conn.execute("DELETE FROM media WHERE id = ?", (media_id,))
+    return [r["file_path"] for r in images]
+
+
+GALLERY_ORDERS = {
+    "most confident": "p.confidence DESC, i.id",
+    "least confident": "p.confidence ASC, i.id",
+    "as filmed": "m.path, i.t_s, i.id",  # clip by clip, in time order within each clip
+}
+
+
+def gallery(
+    conn: sqlite3.Connection,
+    model: str,
+    labels: list[str] | None = None,
+    trips: list[str] | None = None,
+    image_ids: list[int] | None = None,
+    min_confidence: float = 0.0,
+    order: str = "most confident",
+    limit: int = 48,
+    offset: int = 0,
+) -> tuple[list[dict], int]:
+    """One page of images with `model`'s predictions, filtered. Returns (rows, total matches).
+
+    Empty or None `labels`/`trips`/`image_ids` means no filter. Each row has image_id,
+    media_id, file_path, trip, source (original file path), t_s, label, confidence, and
+    scores (dict).
+    """
+    where = ["p.model = ?", "p.confidence >= ?"]
+    params: list = [model, min_confidence]
+    for column, values in (("p.label", labels), ("m.trip", trips), ("i.id", image_ids)):
+        if values:
+            where.append(f"{column} IN ({', '.join('?' * len(values))})")
+            params.extend(values)
+    base = f"""
+        FROM images i
+        JOIN media m ON m.id = i.media_id
+        JOIN predictions p ON p.image_id = i.id
+        WHERE {" AND ".join(where)}
+    """
+    total = conn.execute(f"SELECT COUNT(*) {base}", params).fetchone()[0]
+    rows = conn.execute(
+        f"""
+        SELECT i.id AS image_id, i.media_id, i.file_path, m.trip, m.path AS source, i.t_s,
+               p.label, p.confidence, p.scores
+        {base}
+        ORDER BY {GALLERY_ORDERS[order]}
+        LIMIT ? OFFSET ?
+        """,
+        [*params, limit, offset],
+    ).fetchall()
+    return [{**dict(r), "scores": json.loads(r["scores"])} for r in rows], total
+
+
+def trips(conn: sqlite3.Connection) -> list[str]:
+    rows = conn.execute("SELECT DISTINCT trip FROM media WHERE trip IS NOT NULL ORDER BY trip")
+    return [r["trip"] for r in rows]
+
+
 def import_manifest(conn: sqlite3.Connection, frames_dir: Path) -> int:
     """Load kept frames from frames.py output (manifest.csv + done.txt). Safe to re-run.
 

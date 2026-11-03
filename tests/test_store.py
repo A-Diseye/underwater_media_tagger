@@ -90,6 +90,30 @@ def test_evaluation_skips_unusable_unlabeled_and_other_models(conn):
     assert store.evaluation_rows(conn, "m2")[0]["predicted"] == "rays"
 
 
+def test_gallery_filters_orders_and_pages(conn):
+    azores = store.add_media(conn, "/a/GH01.MP4", "video", fingerprint="a", trip="azores")
+    mexico = store.add_media(conn, "/m/GH02.MP4", "video", fingerprint="m", trip="mexico")
+    for n, (media_id, label, p) in enumerate(
+        [(azores, "rays", 0.9), (azores, "rays", 0.5), (azores, "fish", 0.8), (mexico, "rays", 0.7)]
+    ):
+        image_id = store.add_image(conn, media_id, f"{n}.jpg")
+        store.add_prediction(conn, image_id, "m", scores_with_top(label, p))
+
+    rows, total = store.gallery(conn, "m", labels=["rays"], trips=["azores"])
+    assert total == 2
+    assert [r["confidence"] for r in rows] == pytest.approx([0.9, 0.5])
+
+    rows, total = store.gallery(conn, "m", min_confidence=0.75)
+    assert total == 2 and {r["label"] for r in rows} == {"rays", "fish"}
+
+    rows, total = store.gallery(conn, "m", order="least confident", limit=1, offset=1)
+    assert total == 4 and rows[0]["confidence"] == pytest.approx(0.7)
+    assert store.trips(conn) == ["azores", "mexico"]
+
+    rows, total = store.gallery(conn, "m", image_ids=[2, 4])
+    assert total == 2 and {r["image_id"] for r in rows} == {2, 4}
+
+
 def test_import_manifest_loads_kept_frames_once(conn, tmp_path):
     fields = list(FrameRecord.__dataclass_fields__)
     rows = [

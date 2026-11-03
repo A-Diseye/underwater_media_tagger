@@ -25,8 +25,8 @@ import av
 import cv2
 import numpy as np
 
-VIDEO_EXTS = {".mp4"}
-PHOTO_EXTS = {".jpg", ".jpeg"}
+VIDEO_EXTS = {".mp4", ".mov"}
+PHOTO_EXTS = {".jpg", ".jpeg", ".png"}
 
 # Calibrated on 283 sampled frames from all four trips (Oct 2026):
 # - Fogged-lens frames scored 10-23 on tile sharpness; the lowest real subject (a distant
