@@ -1,0 +1,8 @@
+[server]
+# Dive clips are large; Streamlit's default upload limit is 200 MB.
+maxUploadSize = 2048
+# Only reachable from this machine.
+address = "localhost"
+
+[browser]
+gatherUsageStats = false
