@@ -95,6 +95,37 @@ were locked before test labeling began.
 This is a case where fine-tuning should help: the fine-tuned model trains on real iNaturalist
 photos of lizardfish, flounder, and scorpionfish rather than relying on text descriptions.
 
+## Tradeoffs and future work
+
+### Gallery images: full frames now, thumbnails with React
+
+The Streamlit gallery sends full 1920×1080 frames to every grid cell, about 17 MB per
+48-image page. I started with 360 px thumbnails, but Streamlit's fullscreen button can only
+enlarge the image it was given, so fullscreen showed a blurry, stretched thumbnail and made it
+hard to see the subject. Full frames fix that. Over localhost, a page renders in about 1.5 s,
+which is fine for a local app.
+
+The React frontend (planned after Nov 23) removes the tradeoff. The grid loads small thumbnails
+(about 1.5 MB per page, lazy-loaded as you scroll). A full frame is fetched only when someone
+opens it. Thumbnail generation will live in the core `tagger/` package, so the API and any
+frontend share it.
+
+### What would change to put this online
+
+The app runs locally by design. Making it public would shift the costs:
+
+- **Images:** with thumbnails, page weight stops being the main cost. Users download full
+  frames only for the images they open.
+- **Storage:** the frames (5.1 GB for my library alone) and thumbnails would move to object
+  storage such as S3, served through a CDN.
+- **Compute:** tagging uploads runs CLIP (and later the fine-tuned model). GPU servers are the
+  expensive part. CPU inference is cheaper but slower, so tagging would become a background job
+  with a queue instead of happening while the user waits.
+- **Uploads:** multi-GB dive videos are heavy to upload. Options include extracting frames in the
+  browser before upload, or capping file size.
+- **Security:** user accounts, per-user upload limits, and abuse protection. Today none are
+  needed, because the app only accepts connections from my own machine.
+
 ## Setup
 
 Requires Python 3.12 and [uv](https://docs.astral.sh/uv/).
@@ -103,4 +134,6 @@ Requires Python 3.12 and [uv](https://docs.astral.sh/uv/).
 uv sync            # installs everything, including CUDA PyTorch
 uv run pytest      # run tests
 uv run ruff check . && uv run ruff format --check .
+
+uv run streamlit run app/streamlit_app.py   # app at http://localhost:8501
 ```
