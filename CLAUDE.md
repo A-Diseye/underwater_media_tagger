@@ -38,7 +38,7 @@ Portfolio project: a local app where divers upload underwater photos or dive vid
 | sharks | All sharks (my footage has only 1 blurry shark, so evaluate on held-out internet images) |
 | rays | Stingrays, eagle rays, mantas |
 | fish | All other fish, including eels |
-| invertebrates | Nudibranchs, crabs, shrimp, lobsters, sea stars |
+| invertebrates | Nudibranchs, crabs, shrimp, lobsters, sea stars, octopus, squid, cuttlefish |
 | diver | People as the main subject |
 | scenery | Coral and reef, wide shots, open water, sand, blurry frames: anything with no main animal or diver |
 
@@ -127,7 +127,7 @@ underwater_media_tagger/
 
 ## Things to track for the README
 
-- Commonly confused pairs: sharks vs. fish, rays vs. flatfish on sand
+- Commonly confused pairs: sharks vs. fish, rays vs. flatfish on sand, rays vs. sharks when distant, camouflaged bottom fish vs. sandy `scenery`
 - Accuracy gap between internet-image validation and my own footage
 - How the blurry shark frame is classified
 - Cases where Grad-CAM misses the subject
