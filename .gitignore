@@ -20,3 +20,7 @@ models/
 .idea/
 .DS_Store
 Thumbs.db
+
+# Personal Claude Code settings (shared ones in .claude/settings.json are committed)
+.claude/settings.local.json
+CLAUDE.local.md

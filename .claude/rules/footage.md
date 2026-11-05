@@ -1,0 +1,16 @@
+---
+paths:
+  - "tagger/frames.py"
+  - "tests/test_frames.py"
+---
+
+# Raw footage and frame extraction
+
+- Raw footage stays on the external drive `D:\` (`/mnt/d` in WSL). `frames.py` reads from the drive and writes only kept frames to `data/frames/`. Never write to D: except `D:\underwater_tagger_extracted\`.
+- If `/mnt/d` is empty, the drive isn't mounted: ask me to run `sudo mount -a`.
+- Sources are GoPro files only (names starting with `G`; `PXL_*` and date-named files are phone media):
+  - `Videos\Azores_scuba`, `Videos\Bahamas diving`, `Videos\Mexico`, `Videos\Philippines diving`
+  - `D:\underwater_tagger_extracted\philippines_gopro\`: 31 unique clips extracted from `Pictures\PhilippinesTaiwanPhotos.zip`, verified against zip CRCs
+  - Skip `Azores_scuba\Mobula Ray.zip` (duplicates the `Mobula Ray` folder).
+  - ~7.2 hours of unique video plus ~94 GoPro JPGs.
+- Filter settings (calibrated, see `docs/PLAN.md`): keyframes every 2 s; drop ruined frames where sharpest-tile Laplacian variance < 15; drop near-duplicates with thumbnail correlation ≥ 0.90 against the last kept frame.
