@@ -2,7 +2,6 @@
 
 CATEGORIES = (
     "turtles",
-    "sharks",
     "rays",
     "fish",
     "invertebrates",

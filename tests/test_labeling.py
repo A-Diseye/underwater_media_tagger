@@ -60,11 +60,11 @@ def test_targets_category_furthest_below_quota(conn):
 
 
 def test_top3_pool_includes_runner_ups_but_not_4th(conn):
-    [third] = add_clip(conn, "a", [(0, ranked_scores("rays", "scenery", "sharks"))], "A.MP4")
-    add_clip(conn, "a", [(0, ranked_scores("rays", "scenery", "fish", "sharks"))], "B.MP4")
+    [third] = add_clip(conn, "a", [(0, ranked_scores("rays", "scenery", "turtles"))], "A.MP4")
+    add_clip(conn, "a", [(0, ranked_scores("rays", "scenery", "fish", "turtles"))], "B.MP4")
     picks = {labeling.next_frame(conn, random.Random(s), random_share=0.0) for s in range(20)}
-    shark_picks = {p.image_id for p in picks if p and p.selection == "clip_top3:sharks"}
-    assert shark_picks == {third}
+    turtle_picks = {p.image_id for p in picks if p and p.selection == "clip_top3:turtles"}
+    assert turtle_picks == {third}
 
 
 def test_skips_frames_near_a_labeled_frame_in_the_same_clip(conn):
@@ -94,17 +94,19 @@ def test_uploads_and_skipped_frames_are_never_picked(conn):
 
 
 def test_category_stops_being_targeted_at_quota_or_give_up(conn):
-    ids = add_clip(conn, "azores", [(t * 20, ranked_scores("sharks", "rays")) for t in range(6)])
-    # Shark candidates keep turning out to be rays.
+    ids = add_clip(
+        conn, "azores", [(t * 20, ranked_scores("invertebrates", "rays")) for t in range(6)]
+    )
+    # Invertebrate candidates keep turning out to be rays.
     for image_id in ids[:3]:
-        label(conn, image_id, "rays", selection="clip_top3:sharks")
+        label(conn, image_id, "rays", selection="clip_top3:invertebrates")
     status = labeling.category_status(conn, quota=2, give_up_after=3)
-    assert status["sharks"] == "gave up"
+    assert status["invertebrates"] == "gave up"
     assert status["rays"] == "done"
     assert status["turtles"] == "active"
     pick = labeling.next_frame(conn, random.Random(0), random_share=0.0, quota=2, give_up_after=3)
     # Finished and given-up categories are no longer targeted.
-    assert pick.selection not in ("clip_top3:sharks", "clip_top3:rays")
+    assert pick.selection not in ("clip_top3:invertebrates", "clip_top3:rays")
 
 
 def test_returns_none_when_everything_is_labeled(conn):

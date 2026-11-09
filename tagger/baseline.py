@@ -25,7 +25,9 @@ from tagger import CATEGORIES
 
 MODEL_NAME = "ViT-B-32"
 PRETRAINED = "laion2b_s34b_b79k"  # trained on LAION-2B, a public set of ~2B image-text pairs
-MODEL_ID = "clip-vitb32-zeroshot"  # name stored in the predictions table
+# Name stored in the predictions table. "6cat": sharks merged into fish (the 7-category run
+# stays in the database under "clip-vitb32-zeroshot").
+MODEL_ID = "clip-vitb32-zeroshot-6cat"
 
 # Several wordings per category, averaged: smooths out the quirks of any single phrasing.
 PROMPTS: dict[str, list[str]] = {
@@ -35,13 +37,6 @@ PROMPTS: dict[str, list[str]] = {
         "a close-up photo of a sea turtle underwater",
         "a green sea turtle or hawksbill turtle swimming",
         "a sea turtle resting on the sea floor",
-    ],
-    "sharks": [
-        "an underwater photo of a shark",
-        "a shark swimming in the ocean",
-        "a reef shark swimming over a coral reef",
-        # Unusual-looking sharks CLIP might not link to "shark" on its own.
-        "a hammerhead shark or whale shark underwater",
     ],
     "rays": [
         "an underwater photo of a manta ray",

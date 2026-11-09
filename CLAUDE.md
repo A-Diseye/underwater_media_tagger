@@ -1,6 +1,6 @@
 # Underwater Media Tagger
 
-A local app where divers upload underwater photos or dive videos. A computer vision model tags each image with one of 7 subject categories, and color correction is tuned to the subject's location. Portfolio project, interview-ready demo due **Nov 23, 2026**. Runs locally only; no public deployment.
+A local app where divers upload underwater photos or dive videos. A computer vision model tags each image with one of 6 subject categories, and color correction is tuned to the subject's location. Portfolio project, interview-ready demo due **Nov 23, 2026**. Runs locally only; no public deployment.
 
 Timeline, task list, and README notes: `docs/PLAN.md` (read it when planning or picking the next task). Topic rules in `.claude/rules/` load automatically when you touch the matching files.
 
@@ -60,14 +60,13 @@ Stack: Python 3.12, uv, ruff (line length 100), pytest, PyTorch + `timm`, open-c
 - **Order:** classification first, then subject-aware color correction located by Grad-CAM (no bounding boxes).
 - **Frontend:** Streamlit now, React after Nov 23. **Licensing:** personal use only.
 
-## Categories (7)
+## Categories (6)
 
 | Category | Includes |
 | --- | --- |
 | turtles | All sea turtles |
-| sharks | All sharks (my footage has only 1 blurry shark, so evaluate on held-out internet images) |
 | rays | Stingrays, eagle rays, mantas |
-| fish | All other fish, including eels |
+| fish | All other fish, including sharks and eels |
 | invertebrates | Nudibranchs, crabs, shrimp, lobsters, sea stars, octopus, squid, cuttlefish |
 | diver | People as the main subject |
 | scenery | Coral and reef, wide shots, open water, sand, blurry frames: anything with no main animal or diver |

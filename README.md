@@ -1,9 +1,9 @@
 # Underwater Media Tagger
 
-A local app that tags underwater photos and dive videos by subject (turtles, sharks, rays, fish,
+A local app that tags underwater photos and dive videos by subject (turtles, rays, fish,
 invertebrates, diver, scenery) and applies color correction tuned to where the subject is.
 
-Work in progress. See `CLAUDE.md` for the project plan.
+Work in progress. See `docs/PLAN.md` for the project plan.
 
 ## Progress
 
@@ -54,6 +54,38 @@ a random sample, frames I find by browsing clips I remember, and loose CLIP cand
 anywhere in its top 3). Each label records how its frame was selected, CLIP's guess stays hidden
 while I label, and results will be reported for the random-only subset as well.
 
+### Update: phone photos added, sharks merged into fish (Nov 9, 2026)
+
+**Trip-mates' phone media.** I added 519 frames (446 photos, 73 video frames) from iPhones in
+underwater housings, shot on the same Bahamas dives as my GoPro footage. They can appear in the
+test set but are never used for training, because they show the same animals on the same dives.
+Comparing accuracy on the two cameras will show whether a better GoPro or a phone housing is the
+better buy.
+
+**Why sharks are no longer a category.** The labeling page showed me 80 frames with "sharks" in
+CLIP's top 3, and none of them were sharks. With no sharks to test on, I couldn't measure that
+class on my own footage, and every shark prediction would count as an error, most likely on rays.
+Sharks are fish, so they now fall under `fish`, and the project has 6 categories.
+
+What CLIP predicts after the merge (still unverified guesses, not ground truth):
+
+| Trip | turtles | rays | fish | invertebrates | diver | scenery |
+| --- | --- | --- | --- | --- | --- | --- |
+| Azores | 16 | 347 | 170 | 51 | 1,347 | 2,333 |
+| Bahamas | 25 | 196 | 157 | 59 | 1,459 | 1,872 |
+| Mexico | 6 | 190 | 183 | 23 | 194 | 749 |
+| Philippines | 24 | 283 | 363 | 71 | 919 | 1,964 |
+| **Total** | **71** | **1,016** | **873** | **204** | **3,919** | **6,918** |
+
+Mean confidence was 0.80, and 929 frames (7%) scored below 0.5.
+
+**A mistake worth recording.** My first version of the merge moved one shark prompt into the
+`fish` prompts. That one sentence cut `fish` predictions from 873 to 483, with 311 frames that had
+been `fish` becoming `scenery`, because CLIP averages a category's prompts into a single vector and
+the shark wording pulled that vector away from ordinary reef fish. I caught it by comparing
+prediction counts before and after, without using any hand labels, and removed the prompt. The
+`fish` prompts are unchanged from the 7-category run.
+
 ## Findings so far
 
 ### Zero-shot CLIP mistakes a camouflaged lizardfish for a ray
@@ -90,7 +122,8 @@ CLIP got 1 of 6 frames right, and only narrowly. Three things explain it:
 I stopped tuning prompts at this point instead of rewording until this example passed. Fitting
 the baseline to individual examples, especially ones that may land in the hand-labeled test set,
 would inflate the baseline and make the comparison with the fine-tuned model unfair. The prompts
-were locked before test labeling began.
+were locked before test labeling began. (The scores above are from the 7-category run, before
+sharks were merged into `fish`.)
 
 This is a case where fine-tuning should help: the fine-tuned model trains on real iNaturalist
 photos of lizardfish, flounder, and scorpionfish rather than relying on text descriptions.

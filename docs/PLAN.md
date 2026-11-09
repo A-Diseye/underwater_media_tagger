@@ -18,7 +18,7 @@ Goal: an interview-ready local demo by **Nov 23, 2026**.
 ### Week 2 — My own model (Nov 5 – Nov 11)
 - [ ] `collect_inat.py` curation agent: iNaturalist images for the animal categories (target ~40–100 per class), Claude vision filter, decision log; hand-check a sample of the log
 - [ ] Add my scenery dataset; source diver images
-- [ ] Streamlit labeling page (one frame, 7 category buttons plus "unusable", keyboard shortcuts); hand-label test frames
+- [ ] Streamlit labeling page (one frame, 6 category buttons plus "unusable", keyboard shortcuts); hand-label test frames
 - [ ] Fine-tune ConvNeXt-Tiny locally with augmentation (color shift, blur)
 - [ ] `evaluate.py`: baseline vs. fine-tuned on the test set, confusion matrix
 - [ ] FastAPI wrapper around `tagger/` (skip if behind; the search agent doesn't need it)
@@ -46,10 +46,11 @@ Goal: an interview-ready local demo by **Nov 23, 2026**.
 
 ## Things to track for the README
 
-- Commonly confused pairs: sharks vs. fish, rays vs. flatfish on sand, rays vs. sharks when distant, camouflaged bottom fish vs. sandy `scenery`
+- Commonly confused pairs: rays vs. flatfish on sand, distant rays vs. fish, camouflaged bottom fish vs. sandy `scenery`
 - Accuracy gap between internet-image validation and my own footage
 - GoPro vs. phone case study: accuracy on my GoPro frames vs. trip-mates' iPhone-in-housing photos from the same Bahamas dives (camera from source folder: `bahamas_shared` = phone, everything else = GoPro; filenames aren't reliable, e.g. `Group pic 1.jpg`). Practical question: is a better GoPro or a phone housing the better buy?
-- How the blurry shark frame is classified
+- How the blurry shark frame is classified (should be `fish`)
+- Why sharks were merged into `fish`: 80 CLIP shark candidates shown during labeling and none were sharks, so the class couldn't be evaluated on my footage and every shark prediction would count as an error
 - Cases where Grad-CAM misses the subject
 - Curation agent: keep/reject counts per class, filter accuracy on my hand-checked sample, examples of good and bad rejections
 - Search agent: example questions with the tool calls it made, and questions it got wrong
@@ -71,3 +72,4 @@ Goal: an interview-ready local demo by **Nov 23, 2026**.
 
 - **Nov 2, Philippines zip cleanup:** the Google Photos export had 43 duplicate entries and one broken 45 GB file (first 4 GB duplicated GH030348, rest zeros, no MP4 index). The cleaned zip (30 GB, 34 clips + phone photos) was verified byte-for-byte before the original was deleted.
 - **Category merge:** `no_subject` and `reef_scenery` were merged into `scenery`.
+- **Nov 9, sharks merged into `fish`:** 7 categories became 6, and CLIP was re-run under a new `MODEL_ID`.
