@@ -112,3 +112,69 @@ def test_extract_is_resumable_and_skips_copies(tmp_path):
     assert len(rows) == 3  # t = 0, 2, 4
     kept = [r for r in rows if r["decision"] == "kept"]
     assert kept and all((out / r["frame_path"]).exists() for r in kept)
+
+
+def test_any_camera_applies_only_to_its_own_folder(tmp_path):
+    mine, shared = tmp_path / "mine", tmp_path / "shared"
+    for folder in (mine, shared):
+        folder.mkdir()
+        for name in ("GOPR0001.JPG", "PXL_0001.jpg", "IMG_0001.HEIC", "notes.txt"):
+            (folder / name).touch()
+    assert [p.name for p in frames.iter_media(mine)] == ["GOPR0001.JPG"]
+    assert [p.name for p in frames.iter_media(shared, any_camera=True)] == [
+        "GOPR0001.JPG",
+        "IMG_0001.HEIC",
+        "PXL_0001.jpg",
+    ]
+
+
+def test_load_photo_applies_exif_rotation(tmp_path):
+    from PIL import Image
+
+    wide = cv2.cvtColor(textured(0, size=(240, 320)), cv2.COLOR_BGR2RGB)  # stored landscape
+    exif = Image.Exif()
+    exif[274] = 6  # EXIF orientation: rotate 90° clockwise to display (phone held upright)
+    Image.fromarray(wide).save(tmp_path / "portrait.jpg", exif=exif)
+    assert frames.load_photo(tmp_path / "portrait.jpg").shape == (320, 240, 3)
+
+
+def test_load_photo_reads_heic(tmp_path):
+    from PIL import Image
+    from pillow_heif import register_heif_opener
+
+    register_heif_opener()
+    rgb = cv2.cvtColor(textured(0, size=(240, 320)), cv2.COLOR_BGR2RGB)
+    Image.fromarray(rgb).save(tmp_path / "IMG_0001.HEIC", quality=95)
+    img = frames.load_photo(tmp_path / "IMG_0001.HEIC")
+    assert img.shape == (240, 320, 3)
+    # Same picture back (lossy codec, so roughly): HEIC decoded, and colors stayed BGR.
+    assert np.abs(img.astype(int) - textured(0, size=(240, 320))).mean() < 20
+
+
+@pytest.mark.parametrize(
+    ("rotation", "expected_shape"), [(0, (2, 3)), (-90, (3, 2)), (180, (2, 3))]
+)
+def test_upright_applies_video_rotation(rotation, expected_shape):
+    img = np.arange(6).reshape(2, 3)
+    out = frames.upright(img, rotation)
+    assert out.shape == expected_shape
+    if rotation == -90:  # rotate clockwise: the bottom-left pixel ends up top-left
+        assert out[0, 0] == img[1, 0]
+    if rotation == 180:
+        assert out[0, 0] == img[-1, -1]
+
+
+def test_extract_treats_photo_bursts_as_duplicates(tmp_path):
+    src = tmp_path / "src"
+    src.mkdir()
+    shot = textured(0)
+    cv2.imwrite(str(src / "IMG_0001.jpg"), shot)
+    cv2.imwrite(str(src / "IMG_0002.jpg"), cv2.convertScaleAbs(shot, beta=10))  # same moment
+    cv2.imwrite(str(src / "IMG_0003.jpg"), textured(5))  # new subject
+    out = tmp_path / "out"
+
+    frames.extract([], out, any_camera_sources=[("trip", src)], blur_threshold=0)
+
+    with open(out / frames.MANIFEST) as f:
+        decisions = {r["clip"]: r["decision"] for r in csv.DictReader(f)}
+    assert decisions == {"IMG_0001": "kept", "IMG_0002": "duplicate", "IMG_0003": "kept"}

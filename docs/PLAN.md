@@ -48,6 +48,7 @@ Goal: an interview-ready local demo by **Nov 23, 2026**.
 
 - Commonly confused pairs: sharks vs. fish, rays vs. flatfish on sand, rays vs. sharks when distant, camouflaged bottom fish vs. sandy `scenery`
 - Accuracy gap between internet-image validation and my own footage
+- GoPro vs. phone case study: accuracy on my GoPro frames vs. trip-mates' iPhone-in-housing photos from the same Bahamas dives (camera from source folder: `bahamas_shared` = phone, everything else = GoPro; filenames aren't reliable, e.g. `Group pic 1.jpg`). Practical question: is a better GoPro or a phone housing the better buy?
 - How the blurry shark frame is classified
 - Cases where Grad-CAM misses the subject
 - Curation agent: keep/reject counts per class, filter accuracy on my hand-checked sample, examples of good and bad rejections

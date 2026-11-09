@@ -45,7 +45,7 @@ Stack: Python 3.12, uv, ruff (line length 100), pytest, PyTorch + `timm`, open-c
 ## Hard rules
 
 - **D: drive (`/mnt/d`) holds my only copies of the raw footage. Never modify, move, or delete anything there.** The only writable location is `D:\underwater_tagger_extracted\`. Never copy raw footage into the repo or WSL (C: is low on space). Enforced by `.claude/settings.json` and a hook.
-- The test set is only frames from my own dive videos. Never put internet images into it.
+- The test set is only media from my own dives: my GoPro footage plus trip-mates' photos and videos from the same dives. Never put internet images into it, and never train on trip-mates' media (same dives and animals as my test frames, so it would leak).
 - Test labels come from me by hand. No model or agent labels, pre-fills, or suggests a label for a test frame.
 - Tuning anything (models, prompts, agents) uses validation metrics only, never test-set metrics.
 - Secrets (e.g. `ANTHROPIC_API_KEY`) come from the environment and are never committed.

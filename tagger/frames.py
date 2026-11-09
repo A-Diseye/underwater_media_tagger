@@ -26,7 +26,8 @@ import cv2
 import numpy as np
 
 VIDEO_EXTS = {".mp4", ".mov"}
-PHOTO_EXTS = {".jpg", ".jpeg", ".png"}
+HEIF_EXTS = {".heic", ".heif"}  # iPhone photos; OpenCV can't read these, Pillow can
+PHOTO_EXTS = {".jpg", ".jpeg", ".png", *HEIF_EXTS}
 
 # Calibrated on 283 sampled frames from all four trips (Oct 2026):
 # - Fogged-lens frames scored 10-23 on tile sharpness; the lowest real subject (a distant
@@ -68,11 +69,19 @@ def is_gopro_file(path: Path) -> bool:
     return path.name[:1].upper() == "G" and ext in VIDEO_EXTS | PHOTO_EXTS
 
 
-def iter_media(folder: Path) -> Iterator[Path]:
-    for root, _, files in os.walk(folder):
+def iter_media(folder: Path, any_camera: bool = False) -> Iterator[Path]:
+    """Media files under `folder`, in name order (so photos come in shot order).
+
+    GoPro files only by default, which keeps my own phone media out of folders that mix both.
+    `any_camera=True` accepts every photo and video, for folders that hold only dive media
+    from other cameras (e.g. trip-mates' phones in underwater housings).
+    """
+    for root, dirs, files in os.walk(folder):
+        dirs.sort()
         for name in sorted(files):
             path = Path(root) / name
-            if is_gopro_file(path):
+            ext = path.suffix.lower()
+            if is_gopro_file(path) or (any_camera and ext in VIDEO_EXTS | PHOTO_EXTS):
                 yield path
 
 
@@ -148,20 +157,30 @@ def sample_video(path: Path, every_s: float = EVERY_S, max_side: int = MAX_SIDE)
                 continue
             last_t = t
             img = frame.reformat(width=size[0], height=size[1], format="bgr24").to_ndarray()
-            yield t, img
+            yield t, upright(img, frame.rotation)
+
+
+def upright(img: np.ndarray, rotation: float) -> np.ndarray:
+    """Apply a video's display rotation (degrees counterclockwise, from its metadata).
+
+    Phones record portrait video as landscape pixels plus a "rotate on playback" flag.
+    """
+    turns = round(rotation / 90) % 4
+    return np.ascontiguousarray(np.rot90(img, turns)) if turns else img
 
 
 def select_frames(
     frames: Iterable[tuple[float, np.ndarray]],
     blur_threshold: float = BLUR_THRESHOLD,
     dup_similarity: float = DUP_SIMILARITY,
+    last_kept: np.ndarray | None = None,
 ) -> Iterator[tuple[float, np.ndarray, float, float, str]]:
     """Decide keep/drop for a sequence of frames from one video.
 
     Yields (t, img, sharpness, similarity_to_last_kept, decision). Blurry frames are
-    checked first and never become the comparison point for duplicates.
+    checked first and never become the comparison point for duplicates. `last_kept` is an
+    optional thumbnail to compare the first frame against (the previous photo in a burst).
     """
-    last_kept = None
     for t, img in frames:
         score = sharpness(img)
         thumb = thumbnail(img)
@@ -177,12 +196,24 @@ def select_frames(
 
 
 def load_photo(path: Path, max_side: int = MAX_SIDE) -> np.ndarray:
-    img = cv2.imread(str(path))
+    """Read a photo as an upright BGR image (EXIF rotation applied), scaled to `max_side`."""
+    # cv2.imread applies the EXIF orientation flag by default; HEIC goes through Pillow.
+    img = _load_heif(path) if path.suffix.lower() in HEIF_EXTS else cv2.imread(str(path))
     if img is None:
         raise ValueError(f"could not read image: {path}")
     h, w = img.shape[:2]
     size = fit_size(w, h, max_side)
     return cv2.resize(img, size, interpolation=cv2.INTER_AREA) if size != (w, h) else img
+
+
+def _load_heif(path: Path) -> np.ndarray:
+    from PIL import Image, ImageOps
+    from pillow_heif import register_heif_opener
+
+    register_heif_opener()  # teaches Pillow to open .heic/.heif
+    with Image.open(path) as im:
+        rgb = ImageOps.exif_transpose(im).convert("RGB")
+    return cv2.cvtColor(np.asarray(rgb), cv2.COLOR_RGB2BGR)
 
 
 def _load_done(out_dir: Path) -> dict[str, str]:
@@ -201,8 +232,12 @@ def process_source(
     blur_threshold: float = BLUR_THRESHOLD,
     dup_similarity: float = DUP_SIMILARITY,
     max_side: int = MAX_SIDE,
+    last_kept: np.ndarray | None = None,
 ) -> list[FrameRecord]:
-    """Sample one video or photo, write kept frames as JPEGs, and return all records."""
+    """Sample one video or photo, write kept frames as JPEGs, and return all records.
+
+    `last_kept`: thumbnail of the previous kept photo, so burst shots count as duplicates.
+    """
     kind = "video" if path.suffix.lower() in VIDEO_EXTS else "photo"
     if kind == "video":
         frames = sample_video(path, every_s, max_side)
@@ -212,7 +247,8 @@ def process_source(
     trip_dir = out_dir / trip
     trip_dir.mkdir(parents=True, exist_ok=True)
     records = []
-    for t, img, score, sim, decision in select_frames(frames, blur_threshold, dup_similarity):
+    selected = select_frames(frames, blur_threshold, dup_similarity, last_kept)
+    for t, img, score, sim, decision in selected:
         frame_path = ""
         if decision == "kept":
             name = f"{path.stem}_{t:07.1f}s.jpg" if kind == "video" else f"{path.stem}.jpg"
@@ -234,11 +270,19 @@ def process_source(
     return records
 
 
-def extract(sources: list[tuple[str, Path]], out_dir: Path, **params) -> None:
-    """Process every GoPro file under each (trip, folder), skipping work already done.
+def extract(
+    sources: list[tuple[str, Path]],
+    out_dir: Path,
+    any_camera_sources: list[tuple[str, Path]] = (),
+    **params,
+) -> None:
+    """Process media under each (trip, folder), skipping work already done.
 
-    Resumable: a source's records are appended to the manifest only once it finishes, and its
-    fingerprint goes into done.txt. Byte-identical copies of a processed file are skipped.
+    `sources` take GoPro files only; `any_camera_sources` take every photo and video (see
+    `iter_media`). Resumable: a source's records are appended to the manifest only once it
+    finishes, and its fingerprint goes into done.txt. Byte-identical copies are skipped.
+    Consecutive photos in one folder are compared like video frames, so burst shots of the
+    same moment count as duplicates.
     """
     out_dir.mkdir(parents=True, exist_ok=True)
     done = _load_done(out_dir)
@@ -249,20 +293,26 @@ def extract(sources: list[tuple[str, Path]], out_dir: Path, **params) -> None:
             csv.DictWriter(f, fieldnames=fields).writeheader()
 
     paths = [(trip, p) for trip, folder in sources for p in iter_media(folder)]
+    paths += [(trip, p) for trip, folder in any_camera_sources for p in iter_media(folder, True)]
+    last_photo: dict[Path, np.ndarray] = {}  # folder -> thumbnail of its last kept photo
     for i, (trip, path) in enumerate(paths, 1):
         fp = file_fingerprint(path)
         if fp in done:
             print(f"[{i}/{len(paths)}] skip {path} (already processed as {done[fp]})", flush=True)
             continue
-        records = process_source(path, trip, out_dir, **params)
+        is_photo = path.suffix.lower() in PHOTO_EXTS
+        prev = last_photo.get(path.parent) if is_photo else None
+        records = process_source(path, trip, out_dir, last_kept=prev, **params)
         with open(manifest_path, "a", newline="") as f:
             writer = csv.DictWriter(f, fieldnames=fields)
             writer.writerows(asdict(r) for r in records)
         with open(out_dir / DONE, "a") as f:
             f.write(f"{fp}\t{path}\n")
         done[fp] = str(path)
-        kept = sum(r.decision == "kept" for r in records)
-        print(f"[{i}/{len(paths)}] {path.name}: kept {kept}/{len(records)}", flush=True)
+        kept = [r for r in records if r.decision == "kept"]
+        if is_photo and kept:
+            last_photo[path.parent] = thumbnail(cv2.imread(str(out_dir / kept[0].frame_path)))
+        print(f"[{i}/{len(paths)}] {path.name}: kept {len(kept)}/{len(records)}", flush=True)
 
 
 def _parse_source(value: str) -> tuple[str, Path]:
@@ -278,8 +328,16 @@ def main(argv: list[str] | None = None) -> None:
         "--source",
         type=_parse_source,
         action="append",
-        required=True,
-        help="TRIP=FOLDER; repeat for each folder. Several folders may share a trip name.",
+        default=[],
+        help="TRIP=FOLDER, GoPro files only; repeat for each folder. Folders may share a trip.",
+    )
+    parser.add_argument(
+        "--any-camera-source",
+        type=_parse_source,
+        action="append",
+        default=[],
+        help="TRIP=FOLDER taking every photo and video, not just GoPro files. Only for folders "
+        "of dive media from other cameras (e.g. trip-mates' phones).",
     )
     parser.add_argument("--out", type=Path, default=Path("data/frames"))
     parser.add_argument("--every-s", type=float, default=EVERY_S)
@@ -287,9 +345,12 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--dup-similarity", type=float, default=DUP_SIMILARITY)
     parser.add_argument("--max-side", type=int, default=MAX_SIDE)
     args = parser.parse_args(argv)
+    if not args.source and not args.any_camera_source:
+        parser.error("give at least one --source or --any-camera-source")
     extract(
         args.source,
         args.out,
+        args.any_camera_source,
         every_s=args.every_s,
         blur_threshold=args.blur_threshold,
         dup_similarity=args.dup_similarity,
