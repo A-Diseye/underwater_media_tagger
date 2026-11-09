@@ -8,13 +8,14 @@ Run with:  uv run streamlit run app/streamlit_app.py
 
 from pathlib import Path
 
+import labeling_page  # app/labeling_page.py (Streamlit adds this folder to the import path)
 import pandas as pd
 import streamlit as st
 
 from tagger import CATEGORIES, ingest, store
 from tagger.baseline import MODEL_ID, ClipBaseline
 
-UPLOAD_TYPES = ["jpg", "jpeg", "png", "mp4", "mov"]
+UPLOAD_TYPES = ["jpg", "jpeg", "png", "heic", "heif", "mp4", "mov"]
 GRID_COLUMNS = 6
 
 st.set_page_config(page_title="Underwater Media Tagger", page_icon="🐢", layout="wide")
@@ -210,8 +211,10 @@ def upload_page(conn) -> None:
 
 
 conn = store.connect()
-page = st.sidebar.radio("Page", ["Gallery", "Upload"])
+page = st.sidebar.radio("Page", ["Gallery", "Upload", "Label"])
 if page == "Gallery":
     gallery_page(conn)
-else:
+elif page == "Upload":
     upload_page(conn)
+else:
+    labeling_page.render(conn)

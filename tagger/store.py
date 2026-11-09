@@ -21,6 +21,9 @@ DEFAULT_DB = Path("data/tagger.db")
 
 UNUSABLE = "unusable"
 LABEL_SOURCES = ("test_labeling", "manual_correction")
+# How a test frame was chosen for labeling, so results can be split by it later:
+# "random", "browse", or "clip_top3:<category>" (CLIP had <category> in its top 3).
+SELECTIONS = ("random", "browse", *(f"clip_top3:{c}" for c in CATEGORIES))
 
 SCHEMA = f"""
 CREATE TABLE IF NOT EXISTS media (
@@ -45,6 +48,7 @@ CREATE TABLE IF NOT EXISTS labels (
     image_id   INTEGER NOT NULL REFERENCES images(id),
     source     TEXT NOT NULL CHECK (source IN {LABEL_SOURCES!r}),
     label      TEXT NOT NULL,
+    selection  TEXT,  -- how the frame was chosen (see SELECTIONS); NULL for corrections
     labeled_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (image_id, source)
 );
@@ -71,6 +75,9 @@ def connect(db_path: Path | str = DEFAULT_DB) -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     conn.executescript(SCHEMA)
+    # Databases created before labels.selection existed: add the column.
+    if "selection" not in {r["name"] for r in conn.execute("PRAGMA table_info(labels)")}:
+        conn.execute("ALTER TABLE labels ADD COLUMN selection TEXT")
     return conn
 
 
@@ -102,20 +109,33 @@ def add_image(
     return row["id"]
 
 
-def set_label(conn: sqlite3.Connection, image_id: int, label: str, source: str) -> None:
+def set_label(
+    conn: sqlite3.Connection,
+    image_id: int,
+    label: str,
+    source: str,
+    selection: str | None = None,
+) -> None:
     """Record a hand label (one of the categories, or 'unusable'). Re-labeling replaces it."""
     if label not in (*CATEGORIES, UNUSABLE):
         raise ValueError(f"unknown label: {label!r}")
     if source not in LABEL_SOURCES:
         raise ValueError(f"unknown label source: {source!r}")
+    if selection is not None and selection not in SELECTIONS:
+        raise ValueError(f"unknown selection method: {selection!r}")
     conn.execute(
         """
-        INSERT INTO labels (image_id, source, label) VALUES (?, ?, ?)
-        ON CONFLICT (image_id, source)
-        DO UPDATE SET label = excluded.label, labeled_at = CURRENT_TIMESTAMP
+        INSERT INTO labels (image_id, source, label, selection) VALUES (?, ?, ?, ?)
+        ON CONFLICT (image_id, source) DO UPDATE SET
+            label = excluded.label, selection = excluded.selection,
+            labeled_at = CURRENT_TIMESTAMP
         """,
-        (image_id, source, label),
+        (image_id, source, label, selection),
     )
+
+
+def delete_label(conn: sqlite3.Connection, image_id: int, source: str) -> None:
+    conn.execute("DELETE FROM labels WHERE image_id = ? AND source = ?", (image_id, source))
 
 
 def add_prediction(
@@ -140,11 +160,12 @@ def add_prediction(
 def evaluation_rows(conn: sqlite3.Connection, model: str) -> list[sqlite3.Row]:
     """Test-set images with both a usable hand label and a prediction from `model`.
 
-    Each row has image_id, file_path, true_label, predicted, confidence, and scores (dict).
+    Each row has image_id, file_path, true_label, selection, predicted, confidence, and
+    scores (dict).
     """
     rows = conn.execute(
         """
-        SELECT i.id AS image_id, i.file_path, l.label AS true_label,
+        SELECT i.id AS image_id, i.file_path, l.label AS true_label, l.selection,
                p.label AS predicted, p.confidence, p.scores
         FROM images i
         JOIN labels l ON l.image_id = i.id AND l.source = 'test_labeling'
