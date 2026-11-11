@@ -29,6 +29,7 @@ Quota 40 per category; 30% of auto-picked frames are pure random; skip frames wi
 3. Background animals don't count: tiny scattered fish over a wide reef → `scenery`. Test: crop the fish out; if it still works as a scenery shot, it's `scenery`.
 4. Diver as the main subject → `diver`, unless an animal is also a clear subject (rule 1).
 5. A school of fish as the subject → `fish`.
-6. Can't decide in ~3 seconds → Skip (not labeled).
+6. Reef animals vs. the reef itself: a distinct animal you'd point your light at → `invertebrates` (a clam, scallop, crab, or sea star that's clearly the subject). What makes up the reef → `scenery` (coral, sponges, sea fans, whip coral, a lone anemone). An anemone with a clownfish in it → `fish`.
+7. Can't decide in ~3 seconds → Skip (not labeled).
 
 Unusable = fogged lens, on the boat, at the surface, black frame.

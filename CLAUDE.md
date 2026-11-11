@@ -67,6 +67,6 @@ Stack: Python 3.12, uv, ruff (line length 100), pytest, PyTorch + `timm`, open-c
 | turtles | All sea turtles |
 | rays | Stingrays, eagle rays, mantas |
 | fish | All other fish, including sharks and eels |
-| invertebrates | Nudibranchs, crabs, shrimp, lobsters, sea stars, octopus, squid, cuttlefish |
+| invertebrates | Nudibranchs, crabs, shrimp, lobsters, sea stars, octopus, squid, cuttlefish, and clams or scallops that are clearly the subject |
 | diver | People as the main subject |
-| scenery | Coral and reef, wide shots, open water, sand, blurry frames: anything with no main animal or diver |
+| scenery | Coral, sponges, lone anemones, and reef, wide shots, open water, sand, blurry frames: anything with no main animal or diver |
