@@ -13,6 +13,11 @@ dependencies = [
 ]
 
 [dependency-groups]
+agent = [
+    "anthropic>=2.7.0",
+    "pydantic>=2.14.3",
+    "python-dotenv>=1.2.4",
+]
 app = [
     "streamlit>=1.66.1",
 ]
@@ -28,7 +33,7 @@ ml = [
 ]
 
 [tool.uv]
-default-groups = ["dev", "ml", "app"]
+default-groups = ["dev", "ml", "app", "agent"]
 
 # Pull PyTorch from its CUDA 12.6 wheel index instead of PyPI.
 [tool.uv.sources]

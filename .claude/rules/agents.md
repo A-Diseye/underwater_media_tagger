@@ -24,6 +24,6 @@ paths:
 
 ## Shared rules
 
-- Models: Claude Haiku 5.5 for bulk image checks, Claude Sonnet 5.5 for the search agent.
+- Models: Claude Haiku 5.5 for bulk image checks, Claude Sonnet 5.5 for agent decisions (curation and search).
 - API key from `ANTHROPIC_API_KEY`; never committed. Tests mock the API so CI needs no key.
 - Agents never label, pre-fill, or suggest labels for test frames, and never see test-set metrics.
