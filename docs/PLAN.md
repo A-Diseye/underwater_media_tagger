@@ -17,7 +17,7 @@ Goal: an interview-ready local demo by **Nov 23, 2026**.
 
 ### Week 2 — My own model (Nov 5 – Nov 11)
 - [ ] `collect_inat.py` curation agent: iNaturalist images for the animal categories (target ~40–100 per class), Claude vision filter, decision log; hand-check a sample of the log
-- [ ] Add my scenery dataset; source diver images
+- [ ] Diver photos from Wikimedia Commons and scenery from Commons + iNaturalist (`collect_commons.py`, `collect_scenery.py`); my own scenery frames are test-only
 - [ ] Streamlit labeling page (one frame, 6 category buttons plus "unusable", keyboard shortcuts); hand-label test frames
 - [ ] Fine-tune ConvNeXt-Tiny locally with augmentation (color shift, blur)
 - [ ] `evaluate.py`: baseline vs. fine-tuned on the test set, confusion matrix

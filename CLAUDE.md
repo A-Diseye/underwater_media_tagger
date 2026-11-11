@@ -55,7 +55,7 @@ Stack: Python 3.12, uv, ruff (line length 100), pytest, PyTorch + `timm`, open-c
 - **Labels:** single label per image, the most prominent subject; an animal beats scenery or diver. Frames that are fogged, on the boat, at the surface, or black are labeled `unusable` and excluded from evaluation.
 - **Model:** fine-tune pretrained ConvNeXt-Tiny (`timm`); Grad-CAM works well on CNNs and color correction depends on it. Stretch: CLIP + linear probe.
 - **Baseline:** zero-shot CLIP with text prompts per category.
-- **Training data:** internet images, mostly iNaturalist, mapped to categories by taxonomy and gathered by a curation agent. I source scenery separately.
+- **Training data:** internet images only. Animals: iNaturalist, mapped to categories by taxonomy and gathered by a curation agent. Divers: Wikimedia Commons. Scenery: Commons underwater scenes, iNaturalist corals and sponges, and agent rejects with no main animal. Divers and scenery use fixed workflows, not agents (`training/workflow.py`).
 - **Agents:** a training-data curation agent and a read-only library search agent (details in `.claude/rules/agents.md`).
 - **Order:** classification first, then subject-aware color correction located by Grad-CAM (no bounding boxes).
 - **Frontend:** Streamlit now, React after Nov 23. **Licensing:** personal use only.

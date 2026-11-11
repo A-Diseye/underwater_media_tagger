@@ -1,16 +1,9 @@
 """Collect diver training photos from Wikimedia Commons.
 
-A workflow, not an agent: the steps are fixed in code. There's one category to fill from a known
-list of Commons categories, so there's nothing for a model to decide about what to do next. Code
-takes photos round-robin across the categories (so no one country dominates), Claude Haiku checks
-each one with the same prompt and rules as the iNaturalist agent, and good ones are saved.
-
-Rules on top of the check:
-- At most UPLOADER_SHARE of the photos from one uploader, so one photo shoot (many Commons diver
-  photos are from a few US Navy photographers) can't fill the category.
-- Train/val split by uploader, so one shoot never lands on both sides.
-- Its own log and budget, separate from the iNaturalist agent's, so the two can run at the same
-  time and each budget still holds.
+A workflow, not an agent (see training/workflow.py): there's one category to fill from a known
+list of Commons categories, so there's nothing for a model to decide about where to look next.
+Photos come round-robin from the categories, so no one country dominates. Many Commons diver
+photos come from a few US Navy photographers, which the per-uploader cap keeps in check.
 
 Run with:  uv run python -m training.collect_commons   (needs ANTHROPIC_API_KEY in .env)
 """
@@ -18,28 +11,23 @@ Run with:  uv run python -m training.collect_commons   (needs ANTHROPIC_API_KEY 
 from __future__ import annotations
 
 import argparse
-import io
 import json
-import math
 import random
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from collections import Counter
 from collections.abc import Iterable, Iterator
+from functools import partial
 from pathlib import Path
 
 import anthropic
 from dotenv import load_dotenv
-from PIL import Image, UnidentifiedImageError
 
-from training.collect_inat import check_photo, rejection, split_for
+from training.workflow import Candidate, collect, interleave
 
-CATEGORY = "diver"
 TARGET = 100
 BUDGET_USD = 1.00
-UPLOADER_SHARE = 0.15
 BATCH = 50  # files per metadata request
 
 API = "https://commons.wikimedia.org/w/api.php"
@@ -47,8 +35,8 @@ API = "https://commons.wikimedia.org/w/api.php"
 USER_AGENT = "underwater-media-tagger/0.1 (https://github.com/A-Diseye/underwater_media_tagger)"
 PAUSE_S = 1.0
 # This category's subcategories are per-country underwater diver photos.
-ROOT = "Underwater photographs of scuba divers"
-EXTRA_CATEGORIES = (
+DIVER_ROOT = "Underwater photographs of scuba divers"
+DIVER_EXTRAS = (
     "Scuba diving",
     "Night diving",
     "Technical diving",
@@ -56,7 +44,7 @@ EXTRA_CATEGORIES = (
     "Rebreather diving",
     "Women scuba diving",
 )
-SKIP_CATEGORIES = {"Water clarity"}
+DIVER_SKIP = {"Water clarity"}
 
 
 class Commons:
@@ -116,24 +104,13 @@ class Commons:
     def download(self, url: str) -> bytes:
         return self._fetch(url)
 
-
-def source_categories(commons) -> list[str]:
-    subcats = [s.removeprefix("Category:") for s in commons.members(ROOT, "subcat")]
-    return [c for c in [ROOT, *subcats, *EXTRA_CATEGORIES] if c not in SKIP_CATEGORIES]
+    def subcategories(self, category: str) -> list[str]:
+        return [s.removeprefix("Category:") for s in self.members(category, "subcat")]
 
 
-def round_robin(queues: Iterable[list[str]]) -> Iterator[str]:
-    """One title from each queue in turn, skipping titles already given (files can sit in
-    several categories)."""
-    queues, given = [list(q) for q in queues], set()
-    while any(queues):
-        for queue in queues:
-            while queue:
-                title = queue.pop(0)
-                if title not in given:
-                    given.add(title)
-                    yield title
-                    break
+def diver_categories(commons) -> list[str]:
+    subcats = commons.subcategories(DIVER_ROOT)
+    return [c for c in [DIVER_ROOT, *subcats, *DIVER_EXTRAS] if c not in DIVER_SKIP]
 
 
 def batched(items: Iterable[str], size: int) -> Iterator[list[str]]:
@@ -147,99 +124,30 @@ def batched(items: Iterable[str], size: int) -> Iterator[list[str]]:
         yield batch
 
 
-def load_log(log_path: Path) -> tuple[set[str], Counter, float]:
-    """(titles already decided, photos kept per uploader, dollars spent) from earlier runs."""
-    seen, uploaders, spent = set(), Counter(), 0.0
-    if log_path.exists():
-        with open(log_path) as f:
-            for event in map(json.loads, f):
-                seen.add(event["title"])
-                spent += event["cost_usd"]
-                if event["reason"] is None:
-                    uploaders[event["uploader"]] += 1
-    return seen, uploaders, spent
-
-
-def collect(
-    client, commons, data_dir: Path, target: int = TARGET, budget: float = BUDGET_USD, seed=0
-) -> dict:
-    """Fill the diver category. Returns a summary of what happened."""
-    log_path = data_dir / "curation" / "commons_log.jsonl"
-    log_path.parent.mkdir(parents=True, exist_ok=True)
-    seen, uploaders, spent = load_log(log_path)
-    uploader_cap = math.ceil(target * UPLOADER_SHARE)
-    rejected, skipped = Counter(), Counter()
-
+def commons_candidates(commons, categories: list[str], group: str, seed=0) -> Iterator[Candidate]:
+    """Photos from the categories in turn. Logos, diagrams, and videos are dropped here,
+    from their file type, before anything is downloaded or checked."""
     rng = random.Random(seed)
     queues = []
-    for category in source_categories(commons):
-        titles = [t for t in commons.members(category, "file") if t not in seen]
+    for category in categories:
+        titles = commons.members(category, "file")
         rng.shuffle(titles)
         queues.append(titles)
-
-    def finished() -> bool:
-        return sum(uploaders.values()) >= target or spent >= budget
-
-    for titles in batched(round_robin(queues), BATCH):
-        if finished():
-            break
-        info = commons.image_info(titles)
-        for title in titles:
-            if finished():
-                break
+    given = set()
+    titles = (t for t in interleave(queues) if not (t in given or given.add(t)))
+    for batch in batched(titles, BATCH):
+        info = commons.image_info(batch)
+        for title in batch:
             meta = info.get(title)
-            if meta is None or meta["mime"] != "image/jpeg":  # diagrams, logos, icons, videos
-                skipped["not_a_photo"] += 1
-                continue
-            if uploaders[meta["user"]] >= uploader_cap:
-                skipped["uploader_cap"] += 1
-                continue
-            event = {
-                "title": title,
-                "uploader": meta["user"],
-                "photo_url": meta["url"],
-                "category": CATEGORY,
-                "reason": None,
-                "check": None,
-                "path": None,
-                "cost_usd": 0.0,
-            }
-            try:
-                data = commons.download(meta["url"])
-                is_jpeg = Image.open(io.BytesIO(data)).format == "JPEG"
-            except (urllib.error.URLError, TimeoutError, UnidentifiedImageError):
-                data, is_jpeg = None, False
-            if not is_jpeg:
-                event["reason"] = "unreadable"
-            else:
-                check, event["cost_usd"] = check_photo(client, data)
-                spent += event["cost_usd"]
-                if check is None:
-                    event["reason"] = "check_failed"
-                else:
-                    event["check"] = check.model_dump()
-                    event["reason"] = rejection(check, CATEGORY)
-            if event["reason"] is None:
-                split = split_for(meta["user"])
-                path = data_dir / split / CATEGORY / f"commons_{meta['pageid']}.jpg"
-                path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_bytes(data)
-                event["split"], event["path"] = split, str(path)
-                uploaders[meta["user"]] += 1
-            else:
-                rejected[event["reason"]] += 1
-            with open(log_path, "a") as f:
-                f.write(json.dumps(event) + "\n")
-        print(f"  kept {sum(uploaders.values())}/{target}, spent ${spent:.3f}", flush=True)
-
-    return {
-        "kept": sum(uploaders.values()),
-        "target": target,
-        "uploaders": len(uploaders),
-        "rejected": dict(rejected),
-        "skipped": dict(skipped),
-        "spent_usd": round(spent, 3),
-    }
+            if meta and meta["mime"] == "image/jpeg":
+                yield Candidate(
+                    key=f"commons:{meta['pageid']}",
+                    source="commons",
+                    group=group,
+                    uploader=meta["user"],
+                    url=meta["url"],
+                    fetch=partial(commons.download, meta["url"]),
+                )
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -250,7 +158,11 @@ def main(argv: list[str] | None = None) -> None:
     args = parser.parse_args(argv)
 
     load_dotenv()  # loaded here only, so the key never reaches the shell that runs Claude Code
-    summary = collect(anthropic.Anthropic(), Commons(), args.data_dir, args.target, args.budget)
+    commons = Commons()
+    candidates = commons_candidates(commons, diver_categories(commons), "Commons divers")
+    summary = collect(
+        anthropic.Anthropic(), candidates, "diver", args.data_dir, args.target, args.budget
+    )
     print(json.dumps(summary, indent=2))
 
 

@@ -83,7 +83,8 @@ underwater: true only if the photo was taken under water in a natural setting. F
 the water's surface, boats, an animal held in a hand or on a dock, aquariums, and dead or \
 preserved specimens.
 animal_is_main_subject: true if an animal, or a school or group of animals, is clearly what the \
-photo is about. False if it is tiny or incidental in the scene.
+photo is about. False if it is tiny or incidental in the scene. Coral, sponges, sea fans, and \
+anemones on their own are part of the reef, not animals, for this question.
 category: the most prominent subject. If an animal is clearly a subject, choose the animal's \
 category even when a person is also in the photo.
 - turtles: sea turtles
@@ -92,7 +93,8 @@ category even when a person is also in the photo.
 - invertebrates: crabs, shrimp, lobsters, nudibranchs, sea stars, octopus, squid, cuttlefish, \
 clams and other mollusks
 - diver: a person, when no animal is clearly a subject
-- scenery: coral, reef, sand, or open water with no main animal
+- scenery: coral, sponges, sea fans, a lone anemone, reef, sand, wrecks, or open water, with \
+no main animal or diver
 - other: anything else
 reason: one short sentence explaining your answers."""
 
@@ -190,11 +192,15 @@ def category_for(taxon: dict) -> str | None:
 def rejection(check: PhotoCheck, category: str) -> str | None:
     """Why a photo should be rejected, or None to keep it.
 
-    For diver photos the person is the subject, so there's no main-animal requirement.
+    Animal categories need an animal as the main subject. Diver photos don't (the person is the
+    subject), and scenery photos must not have one.
     """
     if not check.underwater:
         return "not_underwater"
-    if category != "diver" and not check.animal_is_main_subject:
+    if category == "scenery":
+        if check.animal_is_main_subject:
+            return "has_main_animal"
+    elif category != "diver" and not check.animal_is_main_subject:
         return "not_main_subject"
     if check.category != category:
         return "category_mismatch"
