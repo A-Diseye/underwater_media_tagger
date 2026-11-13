@@ -15,27 +15,33 @@ Goal: an interview-ready local demo by **Nov 23, 2026**.
 - [x] Streamlit: upload photos/videos, gallery view
 - [x] Zero-shot CLIP baseline wired end to end (upload -> tag -> gallery)
 
-### Week 2 — My own model (Nov 5 – Nov 11)
-- [ ] `collect_inat.py` curation agent: iNaturalist images for the animal categories (target ~40–100 per class), Claude vision filter, decision log; hand-check a sample of the log
-- [ ] Diver photos from Wikimedia Commons and scenery from Commons + iNaturalist (`collect_commons.py`, `collect_scenery.py`); my own scenery frames are test-only
-- [ ] Streamlit labeling page (one frame, 6 category buttons plus "unusable", keyboard shortcuts); hand-label test frames
-- [ ] Fine-tune ConvNeXt-Tiny locally with augmentation (color shift, blur)
-- [ ] `evaluate.py`: baseline vs. fine-tuned on the test set, confusion matrix
-- [ ] FastAPI wrapper around `tagger/` (skip if behind; the search agent doesn't need it)
-- [ ] **Checkpoint (~Nov 11):** ugly but complete demo, upload -> tag -> gallery, with both models compared
+### Week 2 — My own model (Nov 5 – Nov 13) ✅
+- [x] `collect_inat.py` curation agent: iNaturalist images for the animal categories (100 per class), Claude vision filter, decision log
+- [x] Diver photos from Wikimedia Commons and scenery from Commons + iNaturalist (`collect_commons.py`, `collect_scenery.py`); my own scenery frames are test-only
+- [x] Hand-check of the filter: 98% of keeps, 93% of rejects correct (95 decisions)
+- [x] Streamlit labeling page; hand-label test frames (592 usable)
+- [x] Fine-tune ConvNeXt-Tiny with augmentation; depth-fade color cast chosen on validation (3 seeds each)
+- [x] `evaluate.py`: v1 results in `docs/results/v1` (balanced accuracy CLIP 62%, fine-tuned 60%; fish and invertebrates called scenery)
+- [ ] ~~FastAPI wrapper~~ cut
 
-### Week 3 — Color correction and search (Nov 12 – Nov 18)
-- [ ] `locate.py`: Grad-CAM heatmap -> subject region
-- [ ] `color.py`: classic correction (white balance, red-channel compensation), weighted to the subject region; fall back to whole image if the heatmap is weak or the label is `scenery`
-- [ ] Streamlit: before/after view, filter/search by tag, manual tag correction
-- [ ] Search agent: `tagger/search.py` tools + agent loop, Streamlit chat page, MCP server
-- [ ] Timebox color correction to ~4 days; "visibly better than the original" is the bar
+### Week 3 — Classifier v2 (Nov 14 – Nov 18)
+- [ ] Split labeled frames by clip into dev and locked holdout halves (stratified so rare categories land in both)
+- [ ] Error analysis on the dev half only
+- [ ] v2 training data: animals small in wide scenes (the framing gap), plus a zoom-out augmentation if needed
+- [ ] Retrain, choose v2 on validation + dev; score once on the holdout half
+- [ ] `tagger/classify.py` wired into uploads; Streamlit: filter/search by tag, manual tag correction
+- [ ] Search agent: `tagger/search.py` tools + agent loop, Streamlit chat page (MCP server if time)
 
 ### Week 4 — Ship (Nov 19 – Nov 23)
 - [ ] Run the full app end to end locally; fix bugs
 - [ ] (If time) CLIP + linear probe as a third row in the results table
-- [ ] README: architecture, data, results table, confusion matrix, failure examples, tradeoffs
+- [ ] README: architecture, data, results (v1 and v2), confusion matrix, failure examples, tradeoffs
 - [ ] Record a 2–3 minute demo video
+
+### Free time (secondary)
+- [ ] `locate.py`: Grad-CAM heatmap -> subject region
+- [ ] `color.py`: classic correction (white balance, red-channel compensation), weighted to the subject region
+- [ ] Streamlit: before/after view
 
 ## Success criteria
 

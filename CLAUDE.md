@@ -57,7 +57,8 @@ Stack: Python 3.12, uv, ruff (line length 100), pytest, PyTorch + `timm`, open-c
 - **Baseline:** zero-shot CLIP with text prompts per category.
 - **Training data:** internet images only. Animals: iNaturalist, mapped to categories by taxonomy and gathered by a curation agent. Divers: Wikimedia Commons. Scenery: Commons underwater scenes, iNaturalist corals and sponges, and agent rejects with no main animal. Divers and scenery use fixed workflows, not agents (`training/workflow.py`).
 - **Agents:** a training-data curation agent and a read-only library search agent (details in `.claude/rules/agents.md`).
-- **Order:** classification first, then subject-aware color correction located by Grad-CAM (no bounding boxes).
+- **Order:** classification is the priority until Nov 23. Subject-aware color correction (located by Grad-CAM, no bounding boxes) is a secondary, free-time project.
+- **Test set split for v2:** v1 results came from all labeled frames. For v2, labeled frames are split by clip into a dev half (error analysis and choosing fixes) and a locked holdout half (scored once, when v2 is final).
 - **Frontend:** Streamlit now, React after Nov 23. **Licensing:** personal use only.
 
 ## Categories (6)

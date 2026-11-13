@@ -86,6 +86,99 @@ the shark wording pulled that vector away from ordinary reef fish. I caught it b
 prediction counts before and after, without using any hand labels, and removed the prompt. The
 `fish` prompts are unchanged from the 7-category run.
 
+### Milestone: my own classifier, fine-tuned on curated internet photos (Nov 13, 2026)
+
+**Training data: 600 internet photos, 100 per category.** None of it comes from my footage, which
+is reserved for testing. Three collectors gathered it for $0.43 in API costs:
+
+- **Animals (turtles, rays, fish, invertebrates): a curation agent.** Claude Sonnet decides which
+  iNaturalist species to search next, based on what's being kept and rejected. Claude Haiku checks
+  each photo (underwater? animal the main subject? which category?) without seeing iNaturalist's
+  label, and a photo is kept only if its answer agrees with the taxonomy. Code enforces variety
+  caps per species and per group, so a category can't fill up with nudibranchs.
+- **Divers (Wikimedia Commons) and scenery (Commons plus iNaturalist corals and sponges): fixed
+  workflows, not agents.** There's no "where to look next" decision for these, so code rotates
+  through a fixed list of sources and Haiku does the same check.
+- **I hand-checked the filter:** on a random sample of 95 decisions, 98% of kept photos and 93% of
+  rejections were correct. One kept photo, a stingray shot from above the water, was removed.
+
+Training and validation are split by photographer (452 / 147 photos), so no one's photos land on
+both sides.
+
+**Fine-tuning.** ConvNeXt-Tiny, pretrained on ImageNet-22k, learns the 6 categories in two stages:
+first only the new output layer, then the whole network at a low learning rate. Each run takes
+about a minute on an RTX 3060. The best epoch is picked on validation only.
+
+**Choosing the color augmentation: where my diving experience came in.** The biggest risk is the
+gap between internet photos, which are usually color-corrected, and my GoPro footage, which is
+blue-green and murky. So training images get randomly tinted to look like they were taken deeper.
+My first version cut red and boosted blue and green. As a diver, I knew that's not what water
+does: every color fades with depth, red fastest (it's mostly gone by about 10 m), then green, with
+blue lasting longest. Nothing gets brighter; it's the camera's auto-exposure that brightens the
+image back up afterwards. I replaced the boost with a physical model: fade each color channel
+exponentially with a random depth, at its own rate, then rescale like auto-exposure.
+
+I compared three options over 3 random seeds each, on validation:
+
+| Color augmentation | Balanced accuracy (3 seeds) | Mean |
+| --- | --- | --- |
+| None | 92.4 / 92.9 / 93.0 | 92.8% |
+| Boost (first version) | 90.8 / 92.5 / 92.4 | 91.9% |
+| Depth fade (physical) | 91.9 / 90.9 / 91.9 | 91.6% |
+
+No augmentation scored about 1 point higher. That's the expected cost: validation photos are
+normally colored internet photos, so training on tinted versions makes the model rely less on exact
+colors, which costs a little on normal photos. The benefit can only show up on tinted footage like
+mine, which validation doesn't contain. I chose the depth fade anyway, before seeing any test
+results, because it matches what my footage actually looks like, and because the app's color
+correction will work on exactly these blue-green images. The other two options are scored on the
+test set as comparisons, but their results can't change the choice.
+
+### Test results, v1: fine-tuning wins on divers and rays, loses on fish (Nov 13, 2026)
+
+Scored on 592 hand-labeled frames from my own dives (`unusable` excluded), the same frames for
+every model. Full tables, confusion matrices, and the frames it got wrong:
+[docs/results/v1](docs/results/v1/results.md).
+
+| | CLIP (zero-shot) | Fine-tuned (depth fade) |
+| --- | --- | --- |
+| **Balanced accuracy** | **62%** | **60%** |
+| Accuracy | 72% | 77% |
+| Balanced accuracy, randomly picked frames only (237) | 40% | 59% |
+| Diver (184 frames) | 76% | 95% |
+| Rays (36) | 61% | 86% |
+| Scenery (285) | 80% | 81% |
+| Turtles (12, from a few encounters) | 58% | 58% |
+| Fish (58) | 36% | 9% |
+| Invertebrates (17) | 59% | 29% |
+
+**The fine-tuned model ties CLIP overall, for an interesting reason.** It's much better on divers
+and rays, and on the unbiased random sample. But it calls most fish (40 of 58) and invertebrates
+(12 of 17) `scenery`. In my footage, fish and invertebrates are usually small inside a wide reef
+or wreck scene. In the training photos they fill the frame, because iNaturalist is full of
+close-up portraits. So the model learned "fish = a big fish in the middle", and a small fish on a
+reef looks like a reef. That's a gap in **framing**, not color, so the color augmentation can't
+fix it. CLIP, never taught from close-ups, does better on small fish.
+
+![Confusion matrix of the fine-tuned model on my test set](docs/results/v1/confusion_convnext_tiny_depth_s0.png)
+
+Other findings:
+
+- **Color augmentation, on the test set:** depth fade 60%, boost 59%, none 58% (on GoPro frames
+  only: 57%, 57%, 54%). The direction matches the reasoning above, but the differences are small
+  enough that I treat it as weak evidence, not proof.
+- **Scenery gets confused with divers and rays:** a fin at the edge of the frame reads as a diver,
+  and dark wreck shapes read as rays.
+- **Phone photos (47 frames):** CLIP 73%, fine-tuned 55%. A small sample, but a first clue for the
+  GoPro vs. phone question.
+
+**What comes next, without cheating.** The fix is training photos where the animal is small in a
+wide scene. But I found the problem by looking at test results, so changing the training and
+re-scoring the same frames would turn the test set into a tuning set and make the comparison
+with CLIP unfair. Instead, v1's numbers stay as they are here, and for v2 I split my labeled
+frames by clip into a dev half, used to study errors and choose fixes, and a holdout half that
+stays locked until v2 is final. v2 is reported on the holdout half only.
+
 ## Findings so far
 
 ### Zero-shot CLIP mistakes a camouflaged lizardfish for a ray
