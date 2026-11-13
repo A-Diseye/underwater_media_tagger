@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import json
 import random
 import subprocess
 import time
@@ -67,6 +68,7 @@ class Config:
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
     workers: int = 4
     zoom_out: float = 0.0  # chance an animal training photo is pasted small into a scenery photo
+    wide_photos: bool = True  # include the wide-framing training photos (data/curation/wide_log)
 
 
 class DepthCast:
@@ -198,8 +200,12 @@ def zoom_out(animal: Image.Image, background: Image.Image, scale=(0.3, 0.6)) -> 
 class ZoomOutFolder(CategoryFolder):
     """The training set, where animal photos are sometimes zoomed out into a scenery photo."""
 
-    def __init__(self, root, transform, p: float):
+    def __init__(self, root, transform, p: float, exclude: set[str] = frozenset()):
         super().__init__(root, transform)
+        if exclude:  # e.g. leave out the wide-framing photos, to train the v1 recipe
+            self.samples = [(path, t) for path, t in self.samples if path not in exclude]
+            self.targets = [t for _, t in self.samples]
+            self.imgs = self.samples
         self.p = p
         scenery = CATEGORIES.index("scenery")
         self.backgrounds = [path for path, target in self.samples if target == scenery]
@@ -210,6 +216,19 @@ class ZoomOutFolder(CategoryFolder):
         if CATEGORIES[target] in ANIMALS and self.backgrounds and random.random() < self.p:
             img = zoom_out(img, self.loader(random.choice(self.backgrounds)))
         return self.transform(img), target
+
+
+def wide_photo_paths(data_dir: Path) -> set[str]:
+    """Training files the wide-framing run kept, as the paths the training folder lists."""
+    log = data_dir / "curation" / "wide_log.jsonl"
+    if not log.exists():
+        return set()
+    paths = set()
+    with open(log) as f:
+        for event in map(json.loads, f):
+            if event.get("event") == "photo" and event.get("split") == "train":
+                paths.add(str(data_dir / "train" / event["category"] / Path(event["path"]).name))
+    return paths
 
 
 def seed_everything(seed: int) -> None:
@@ -261,7 +280,8 @@ def train(cfg: Config) -> dict:
     data_cfg = timm.data.resolve_data_config({}, model=model)
     size = cfg.image_size or data_cfg["input_size"][-1]
     train_tf, val_tf = build_transforms(data_cfg, size, cfg.cast)
-    train_set = ZoomOutFolder(cfg.data_dir / "train", train_tf, cfg.zoom_out)
+    exclude = set() if cfg.wide_photos else wide_photo_paths(cfg.data_dir)
+    train_set = ZoomOutFolder(cfg.data_dir / "train", train_tf, cfg.zoom_out, exclude)
     val_sets = {"val": CategoryFolder(cfg.data_dir / "val", val_tf)}
     if (cfg.data_dir / "val_wide").is_dir():
         val_sets["val_wide"] = CategoryFolder(cfg.data_dir / "val_wide", val_tf, allow_missing=True)
@@ -377,6 +397,9 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--epochs-full", type=int, default=Config.epochs_full)
     parser.add_argument("--seed", type=int, default=Config.seed)
     parser.add_argument("--zoom-out", type=float, default=Config.zoom_out)
+    parser.add_argument(
+        "--no-wide-photos", action="store_true", help="Train without the wide-framing photos."
+    )
     args = parser.parse_args(argv)
     cfg = Config(
         run_name=args.run_name,
@@ -385,6 +408,7 @@ def main(argv: list[str] | None = None) -> None:
         epochs_full=args.epochs_full,
         seed=args.seed,
         zoom_out=args.zoom_out,
+        wide_photos=not args.no_wide_photos,
     )
     result = train(cfg)
     best = result["best"]

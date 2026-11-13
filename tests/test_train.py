@@ -127,3 +127,20 @@ def test_epochs_are_picked_on_both_validation_sets(tmp_path):
     assert best["val_wide"] is not None
     expected = (best["balanced_accuracy"] + best["val_wide"]["balanced_accuracy"]) / 2
     assert best["selection_score"] == pytest.approx(expected)
+
+
+def test_wide_photos_can_be_left_out(tmp_path):
+    import json
+
+    make_split(tmp_path / "train", 2)
+    wide = tmp_path / "train" / "fish" / "inat_wide.jpg"
+    Image.fromarray(np.zeros((40, 40, 3), dtype=np.uint8)).save(wide)
+    log = tmp_path / "curation" / "wide_log.jsonl"
+    log.parent.mkdir()
+    event = {"event": "photo", "split": "train", "category": "fish", "path": str(wide)}
+    log.write_text(json.dumps(event) + "\n")
+    exclude = tr.wide_photo_paths(tmp_path)
+    assert exclude == {str(wide)}
+    folder = tr.ZoomOutFolder(tmp_path / "train", None, 0.0, exclude)
+    assert len(folder) == 12 and str(wide) not in {p for p, _ in folder.samples}
+    assert len(tr.ZoomOutFolder(tmp_path / "train", None, 0.0)) == 13

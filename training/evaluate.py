@@ -190,7 +190,9 @@ def evaluate(
 ) -> dict:
     """Score the models. `half` limits scoring to one half of the dev/holdout split."""
     names = {CLIP_MODEL_ID: "zero-shot CLIP baseline", primary: "fine-tuned (chosen)"}
-    names.update({a: "fine-tuned (ablation, didn't affect the choice)" for a in ablations})
+    names.update({a: "fine-tuned (comparison, didn't affect the choice)" for a in ablations})
+    if half == "dev":  # nothing is chosen yet: dev is where candidates are compared
+        names.update({m: "fine-tuned candidate" for m in (primary, *ablations)})
     rows = shared_rows(conn, list(names))
     if half is not None:
         split = eval_split.load_split(split_path)
