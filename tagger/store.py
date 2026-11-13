@@ -205,6 +205,9 @@ GALLERY_ORDERS = {
     "most confident": "p.confidence DESC, i.id",
     "least confident": "p.confidence ASC, i.id",
     "as filmed": "m.path, i.t_s, i.id",  # clip by clip, in time order within each clip
+    # My corrections (newest first), then frames I labeled unusable, then the rest, so a tag I
+    # set by hand is easy to find and change.
+    "my labels first": "c.label IS NULL, u.label IS NULL, c.labeled_at DESC, i.id",
 }
 
 

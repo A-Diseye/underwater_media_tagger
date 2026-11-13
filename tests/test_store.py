@@ -195,3 +195,19 @@ def test_only_my_unusable_test_labels_show_in_the_gallery():
     assert (rows[ids[2]]["label"], rows[ids[2]]["corrected"]) == ("turtles", True)
     assert rows[ids[2]]["labeled_unusable"] is False
     assert store.gallery(conn, "m", labels=[store.UNUSABLE])[1] == 1
+
+
+def test_my_labels_first_sort():
+    conn = store.connect(":memory:")
+    media = store.add_media(conn, "/d/a.MP4", "video", "fp", "mexico")
+    ids = [store.add_image(conn, media, f"/f/{i}.jpg", t_s=i * 30.0) for i in range(4)]
+    for image_id in ids:
+        store.add_prediction(
+            conn, image_id, "m", {c: (0.9 if c == "diver" else 0.02) for c in CATEGORIES}
+        )
+    store.set_label(conn, ids[3], store.UNUSABLE, "test_labeling", "random")
+    store.set_label(conn, ids[1], "fish", store.CORRECTION)
+    conn.execute("UPDATE labels SET labeled_at = '2026-01-01' WHERE image_id = ?", (ids[1],))
+    store.set_label(conn, ids[2], "rays", store.CORRECTION)  # newer correction
+    order = [r["image_id"] for r in store.gallery(conn, "m", order="my labels first")[0]]
+    assert order == [ids[2], ids[1], ids[3], ids[0]]
