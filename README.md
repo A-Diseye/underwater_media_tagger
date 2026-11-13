@@ -179,6 +179,71 @@ with CLIP unfair. Instead, v1's numbers stay as they are here, and for v2 I spli
 frames by clip into a dev half, used to study errors and choose fixes, and a holdout half that
 stays locked until v2 is final. v2 is reported on the holdout half only.
 
+### v2: closing part of the framing gap (Nov 13, 2026)
+
+**How v2 was developed without spending the test set.** My labeled frames were split by clip
+(whole encounters go to one side) into a **dev half** (294 frames) for studying errors and
+choosing fixes, and a **holdout half** that stayed locked. I then labeled more frames from
+holdout clips only, bringing the holdout to 635 frames. Rare animals were balanced across both
+halves, but my footage limits them: the holdout has 11 turtle, 14 invertebrate, and 19 ray frames.
+
+**Two fixes, aimed at the framing gap:**
+
+- **Wide-framing photos (~200):** the curation agent ran again, with Haiku also judging how the
+  animal is framed, and kept only medium and wide shots: 50 more training photos per animal
+  category. Its instructions also asked for plainer and temperate fish (sea bream, wrasses,
+  damselfish), not just colorful reef fish. Most keeps were medium shots; truly wide shots of a
+  clear subject are rare online.
+- **Zoom-out augmentation:** during training, an animal photo is sometimes shrunk and pasted
+  with a soft edge into a random scenery photo, keeping its label. The composites aren't
+  realistic (the pasted photo brings its own background), so I only trusted it if the
+  measurements agreed.
+
+The same agent run collected a separate **wide-framing validation set** (30 photos per animal
+category, from photographers never used for training), so validation could finally see the
+problem.
+
+**Choosing v2: 4 variants × 3 seeds, on validation, then the dev half.** "Both fixes" won on wide
+validation (99.7% vs. 96.4% for the v1 recipe) and on the dev half (75% vs. 69% balanced
+accuracy), and had the best score on randomly picked frames. Zoom-out alone didn't help, but
+combined with the real wide photos it gave the best result. One lesson: the wide validation set
+turned out too easy (every variant scored 96–100%), because Haiku only kept photos with a clear
+subject. It pointed the right way but couldn't separate the variants well; the dev half did that.
+
+**Holdout results: scored once, after v2 was chosen.**
+
+| Holdout half (635 frames) | CLIP (zero-shot) | v1 | **v2** |
+| --- | --- | --- | --- |
+| **Balanced accuracy** | 56% | 52% | **69%** |
+| Accuracy | 73% | 77% | 74% |
+| Randomly picked frames only (358) | 41% | 50% | 62% |
+| Turtles (11) | 55% | 36% | 64% |
+| Rays (19) | 53% | 89% | 84% |
+| Fish (56) | 29% | 4% | 27% |
+| Invertebrates (14) | 43% | 7% | 79% |
+| Diver (229) | 75% | 97% | 95% |
+| Scenery (306) | 84% | 80% | 67% |
+| Phone photos (57) | 56% | 51% | 76% |
+
+Full tables, confusion matrices, and failures: [docs/results/holdout-v2](docs/results/holdout-v2/results.md).
+
+**What v2 fixed, and what it didn't:**
+
+- **v2 beats CLIP by 13 points** of balanced accuracy on frames that played no part in building
+  it, and is strongest on divers, rays, invertebrates, and the trip-mates' phone photos.
+- **Invertebrates improved the most** (7% to 79%), and **fish went from 4% to 27%**, roughly level
+  with CLIP but still the weakest category. Most missed fish are still called scenery (23 of
+  56), and a new confusion appeared: small fish on a reef called invertebrates (11).
+- **The price is scenery** (80% to 67%). v2 now sees an animal in some reef shots: of 306 scenery
+  frames, 30 were called invertebrates and 20 rays. For a dive tagger, flagging a possible animal
+  is a gentle mistake, but it counts as one.
+- **A possible contributor to the fish/scenery confusion: my own labels.** Labeling rule 3
+  ("background animals don't count") is a judgment call about how prominent a fish has to be,
+  and I labeled these frames over several days, so my line between `fish` and `scenery` may not
+  be perfectly consistent. I didn't relabel anything after seeing results, since fixing only
+  the frames a model disagrees with would bias the answer key toward that model; any labeling
+  noise affects CLIP, v1, and v2 equally.
+
 ## Findings so far
 
 ### Zero-shot CLIP mistakes a camouflaged lizardfish for a ray

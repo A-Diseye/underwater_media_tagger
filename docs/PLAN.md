@@ -25,10 +25,10 @@ Goal: an interview-ready local demo by **Nov 23, 2026**.
 - [ ] ~~FastAPI wrapper~~ cut
 
 ### Week 3 — Classifier v2 (Nov 14 – Nov 18)
-- [ ] Split labeled frames by clip into dev and locked holdout halves (stratified so rare categories land in both)
-- [ ] Error analysis on the dev half only
-- [ ] v2 training data: animals small in wide scenes (the framing gap), plus a zoom-out augmentation if needed
-- [ ] Retrain, choose v2 on validation + dev; score once on the holdout half
+- [x] Split labeled frames by clip into dev and locked holdout halves (stratified so rare categories land in both); holdout grown to 635 frames
+- [x] Error analysis on the dev half only
+- [x] v2 training data: ~200 wide-framing photos (agent `--wide`), plus zoom-out augmentation
+- [x] Retrain, choose v2 on validation + dev; score once on the holdout half: v2 69% vs. CLIP 56% balanced accuracy (`docs/results/holdout-v2`)
 - [ ] `tagger/classify.py` wired into uploads; Streamlit: filter/search by tag, manual tag correction
 - [ ] Search agent: `tagger/search.py` tools + agent loop, Streamlit chat page (MCP server if time)
 
