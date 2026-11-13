@@ -41,31 +41,58 @@ class Pick:
     selection: str
 
 
-def label_counts(conn: sqlite3.Connection) -> Counter:
+MediaIds = frozenset[int] | set[int] | None  # restrict to these clips; None means all
+
+
+def _media_filter(media_ids: MediaIds, column: str = "i.media_id") -> tuple[str, list]:
+    """SQL (and params) limiting a query to some clips, e.g. the holdout half of the test set."""
+    if media_ids is None:
+        return "", []
+    ids = sorted(media_ids)
+    if not ids:
+        return " AND 0", []
+    return f" AND {column} IN ({', '.join('?' * len(ids))})", ids
+
+
+def label_counts(conn: sqlite3.Connection, media_ids: MediaIds = None) -> Counter:
     """My test labels per category (and 'unusable')."""
+    where, params = _media_filter(media_ids)
     rows = conn.execute(
-        "SELECT label, COUNT(*) n FROM labels WHERE source = ? GROUP BY label", (SOURCE,)
+        f"""
+        SELECT l.label, COUNT(*) n FROM labels l JOIN images i ON i.id = l.image_id
+        WHERE l.source = ?{where} GROUP BY l.label
+        """,
+        (SOURCE, *params),
     )
     return Counter({r["label"]: r["n"] for r in rows})
 
 
-def candidate_attempts(conn: sqlite3.Connection) -> Counter:
+def candidate_attempts(conn: sqlite3.Connection, media_ids: MediaIds = None) -> Counter:
     """How many frames from each category's CLIP top-3 pool I've labeled (whatever they were)."""
+    where, params = _media_filter(media_ids)
     rows = conn.execute(
-        """
-        SELECT substr(selection, length('clip_top3:') + 1) AS category, COUNT(*) n
-        FROM labels WHERE source = ? AND selection LIKE 'clip_top3:%' GROUP BY category
+        f"""
+        SELECT substr(l.selection, length('clip_top3:') + 1) AS category, COUNT(*) n
+        FROM labels l JOIN images i ON i.id = l.image_id
+        WHERE l.source = ? AND l.selection LIKE 'clip_top3:%'{where} GROUP BY category
         """,
-        (SOURCE,),
+        (SOURCE, *params),
     )
     return Counter({r["category"]: r["n"] for r in rows})
 
 
 def category_status(
-    conn: sqlite3.Connection, quota: int = QUOTA, give_up_after: int = GIVE_UP_AFTER
+    conn: sqlite3.Connection,
+    quota: int = QUOTA,
+    give_up_after: int = GIVE_UP_AFTER,
+    media_ids: MediaIds = None,
 ) -> dict[str, str]:
-    """'done' (quota met), 'gave up' (pool kept turning up other things), or 'active'."""
-    counts, attempts = label_counts(conn), candidate_attempts(conn)
+    """'done' (quota met), 'gave up' (pool kept turning up other things), or 'active'.
+
+    With `media_ids`, counts only labels in those clips, so the holdout half can be grown on
+    its own quota.
+    """
+    counts, attempts = label_counts(conn, media_ids), candidate_attempts(conn, media_ids)
     status = {}
     for c in CATEGORIES:
         if counts[c] >= quota:
@@ -94,8 +121,11 @@ def _top3_condition(category: str) -> str:
     return f"({' + '.join(beats)}) < 3"
 
 
-def _eligible_frames(category: str | None, exclude_ids: tuple[int, ...]) -> tuple[str, list]:
+def _eligible_frames(
+    category: str | None, exclude_ids: tuple[int, ...], media_ids: MediaIds = None
+) -> tuple[str, list]:
     """FROM/WHERE for unlabeled library frames, spaced away from labeled ones."""
+    clip_filter, clip_params = _media_filter(media_ids)
     sql = f"""
         FROM images i
         JOIN media m ON m.id = i.media_id
@@ -109,14 +139,19 @@ def _eligible_frames(category: str | None, exclude_ids: tuple[int, ...]) -> tupl
                          AND ABS(j.t_s - i.t_s) <= ?)))
           {f"AND i.id NOT IN ({', '.join('?' * len(exclude_ids))})" if exclude_ids else ""}
           {f"AND {_top3_condition(category)}" if category else ""}
+          {clip_filter}
     """
-    return sql, [MODEL_ID, UPLOAD_TRIP, SOURCE, UNUSABLE, SPACING_S, *exclude_ids]
+    return sql, [MODEL_ID, UPLOAD_TRIP, SOURCE, UNUSABLE, SPACING_S, *exclude_ids, *clip_params]
 
 
 def _random_from(
-    conn: sqlite3.Connection, rng: random.Random, category: str | None, exclude_ids
+    conn: sqlite3.Connection,
+    rng: random.Random,
+    category: str | None,
+    exclude_ids,
+    media_ids: MediaIds = None,
 ) -> tuple[int, str] | None:
-    where, params = _eligible_frames(category, tuple(exclude_ids))
+    where, params = _eligible_frames(category, tuple(exclude_ids), media_ids)
     n = conn.execute(f"SELECT COUNT(*) {where}", params).fetchone()[0]
     if n == 0:
         return None
@@ -135,38 +170,41 @@ def next_frame(
     random_share: float = RANDOM_SHARE,
     quota: int = QUOTA,
     give_up_after: int = GIVE_UP_AFTER,
+    media_ids: MediaIds = None,
 ) -> Pick | None:
     """The next frame to label, or None when nothing eligible is left.
 
     `exclude_ids` holds frames skipped this session, so they don't come straight back.
+    `media_ids` limits picks (and the quota counts) to some clips, e.g. the holdout half.
     """
     rng = rng or random.Random()
-    status = category_status(conn, quota, give_up_after)
-    counts = label_counts(conn)
+    status = category_status(conn, quota, give_up_after, media_ids)
+    counts = label_counts(conn, media_ids)
     # Furthest below quota first.
     targets = sorted((c for c in CATEGORIES if status[c] == "active"), key=lambda c: counts[c])
 
     if targets and rng.random() >= random_share:
         for category in targets:
-            found = _random_from(conn, rng, category, exclude_ids)
+            found = _random_from(conn, rng, category, exclude_ids, media_ids)
             if found:
                 return Pick(*found, selection=f"clip_top3:{category}")
-    found = _random_from(conn, rng, None, exclude_ids)
+    found = _random_from(conn, rng, None, exclude_ids, media_ids)
     return Pick(*found, selection="random") if found else None
 
 
-def library_clips(conn: sqlite3.Connection, trip: str) -> list[dict]:
+def library_clips(conn: sqlite3.Connection, trip: str, media_ids: MediaIds = None) -> list[dict]:
     """Videos and photos in one library trip, with frame and label counts, for browse mode."""
+    where, params = _media_filter(media_ids, "m.id")
     rows = conn.execute(
-        """
+        f"""
         SELECT m.id, m.path, COUNT(i.id) AS frames, COUNT(l.image_id) AS labeled
         FROM media m
         JOIN images i ON i.media_id = m.id
         LEFT JOIN labels l ON l.image_id = i.id AND l.source = ?
-        WHERE m.trip = ?
+        WHERE m.trip = ?{where}
         GROUP BY m.id ORDER BY m.path
         """,
-        (SOURCE, trip),
+        (SOURCE, trip, *params),
     )
     return [dict(r) for r in rows]  # plain dicts: UI widgets need copyable values
 

@@ -8,7 +8,7 @@ import random
 
 import streamlit as st
 
-from tagger import CATEGORIES, labeling, store
+from tagger import CATEGORIES, eval_split, labeling, store
 from tagger.ingest import UPLOAD_TRIP
 
 RULES = """
@@ -71,9 +71,9 @@ def _undo() -> None:
         s.browse_index = max(s.browse_index - 1, 0)
 
 
-def _progress(conn) -> None:
-    counts = labeling.label_counts(conn)
-    status = labeling.category_status(conn)
+def _progress(conn, media_ids) -> None:
+    counts = labeling.label_counts(conn, media_ids)
+    status = labeling.category_status(conn, media_ids=media_ids)
     cols = st.columns(len(CATEGORIES) + 1)
     for col, c in zip(cols, CATEGORIES, strict=False):
         mark = {"done": " ✓", "gave up": " (pool used up)"}.get(status[c], "")
@@ -119,10 +119,12 @@ def _show_frame(file_path: str) -> None:
     middle.image(file_path, width="stretch")
 
 
-def _auto_mode(conn) -> None:
+def _auto_mode(conn, media_ids) -> None:
     s = _state()
     if s.label_current is None:
-        s.label_current = labeling.next_frame(conn, random.Random(), exclude_ids=s.label_skipped)
+        s.label_current = labeling.next_frame(
+            conn, random.Random(), exclude_ids=s.label_skipped, media_ids=media_ids
+        )
     pick = s.label_current
     if pick is None:
         st.success("Nothing left to label: every category hit its quota or ran out of candidates.")
@@ -131,12 +133,12 @@ def _auto_mode(conn) -> None:
     _label_buttons(pick, "auto", allow_skip=True)
 
 
-def _browse_mode(conn) -> None:
+def _browse_mode(conn, media_ids) -> None:
     s = _state()
     trips = [t for t in store.trips(conn) if t != UPLOAD_TRIP]
     left, right = st.columns(2)
     trip = left.selectbox("Trip", trips, key="browse_trip")
-    clips = {c["id"]: c for c in labeling.library_clips(conn, trip)}
+    clips = {c["id"]: c for c in labeling.library_clips(conn, trip, media_ids)}
 
     def describe(media_id: int) -> str:
         c = clips[media_id]
@@ -177,11 +179,35 @@ def _browse_mode(conn) -> None:
     _label_buttons(pick, "browse", allow_skip=False)
 
 
+def _holdout_scope(conn):
+    """Clip ids to limit labeling to, or None for all clips.
+
+    Once the test set is split, new labels should grow the locked holdout half: the dev half
+    has already been studied, so more labels there can't make v2's final score more honest.
+    """
+    try:
+        holdout = eval_split.media_ids(conn, "holdout")
+    except FileNotFoundError:
+        return None
+    only = st.toggle(
+        "Holdout clips only",
+        value=True,
+        help="Label frames from the locked holdout half of the test set. Quotas and progress "
+        "count holdout labels only.",
+    )
+    scope = holdout if only else None
+    s = _state()
+    if s.get("label_scope") != only:  # the frame on screen may be from the other scope
+        s.label_scope, s.label_current = only, None
+    return scope
+
+
 def render(conn) -> None:
     st.title("Label test frames")
     with st.expander("Labeling rules"):
         st.markdown(RULES)
-    _progress(conn)
+    media_ids = _holdout_scope(conn)
+    _progress(conn, media_ids)
     mode = st.segmented_control(
         "Mode",
         ["Auto", "Browse clips"],
@@ -190,6 +216,6 @@ def render(conn) -> None:
         "Browse lets you step through a clip you remember.",
     )
     if mode == "Browse clips":
-        _browse_mode(conn)
+        _browse_mode(conn, media_ids)
     else:
-        _auto_mode(conn)
+        _auto_mode(conn, media_ids)

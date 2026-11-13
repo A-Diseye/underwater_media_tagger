@@ -15,7 +15,8 @@ Slices:
 Outputs go to docs/results/<version>/: results.md, a confusion matrix per model, and a
 contact sheet of frames the primary model got wrong.
 
-Run with:  uv run python -m training.evaluate --primary convnext_tiny_depth_s0 [--ablation ID ...]
+Run with:  uv run python -m training.evaluate --primary ID [--ablation ID ...] [--split dev]
+           (the holdout half also needs --final, once)
 """
 
 from __future__ import annotations
@@ -26,7 +27,7 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw
 
-from tagger import CATEGORIES, store
+from tagger import CATEGORIES, eval_split, store
 from tagger.baseline import MODEL_ID as CLIP_MODEL_ID
 
 OUT_DIR = Path("docs/results/v1")
@@ -127,10 +128,17 @@ def failure_sheet(rows: dict[str, list[dict]], primary: str, path: Path, limit: 
     return len(wrong)
 
 
-def report(rows: dict[str, list[dict]], names: dict[str, str], primary: str) -> str:
+def report(
+    rows: dict[str, list[dict]], names: dict[str, str], primary: str, half: str | None = None
+) -> str:
     models = list(rows)
+    scope = {
+        None: "all labeled frames",
+        "dev": "the **dev** half (used for error analysis and choosing fixes)",
+        "holdout": "the **holdout** half (locked until now, scored once)",
+    }[half]
     lines = [
-        "# Test-set results",
+        f"# Test-set results: {scope}",
         "",
         f"Hand-labeled frames from my own dives, `unusable` excluded: **{len(rows[primary])}** "
         "frames, the same frames for every model. Balanced accuracy is the average of "
@@ -172,15 +180,28 @@ def report(rows: dict[str, list[dict]], names: dict[str, str], primary: str) -> 
     return "\n".join(lines)
 
 
-def evaluate(conn, primary: str, ablations: list[str], out_dir: Path = OUT_DIR) -> dict:
+def evaluate(
+    conn,
+    primary: str,
+    ablations: list[str],
+    out_dir: Path = OUT_DIR,
+    half: str | None = None,
+    split_path: Path = eval_split.SPLIT_PATH,
+) -> dict:
+    """Score the models. `half` limits scoring to one half of the dev/holdout split."""
     names = {CLIP_MODEL_ID: "zero-shot CLIP baseline", primary: "fine-tuned (chosen)"}
     names.update({a: "fine-tuned (ablation, didn't affect the choice)" for a in ablations})
     rows = shared_rows(conn, list(names))
+    if half is not None:
+        split = eval_split.load_split(split_path)
+        if split is None:
+            raise FileNotFoundError(f"no test split at {split_path}")
+        rows = {m: [r for r in rs if r["source"] in split[half]] for m, rs in rows.items()}
     out_dir.mkdir(parents=True, exist_ok=True)
     for m in rows:
         confusion_image(metrics(rows[m]), f"{m} ({names[m]})", out_dir / f"confusion_{m}.png")
     n_wrong = failure_sheet(rows, primary, out_dir / "failures.jpg")
-    (out_dir / "results.md").write_text(report(rows, names, primary))
+    (out_dir / "results.md").write_text(report(rows, names, primary, half))
     return {"frames": len(rows[primary]), "primary_wrong_shown": n_wrong}
 
 
@@ -188,11 +209,20 @@ def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Compare models on the hand-labeled test set.")
     parser.add_argument("--primary", required=True, help="Model ID of the chosen model.")
     parser.add_argument("--ablation", action="append", default=[], help="Other model IDs.")
+    parser.add_argument("--split", choices=eval_split.HALVES, default="dev")
+    parser.add_argument(
+        "--final",
+        action="store_true",
+        help="Required to score the holdout half. Use once, when the model is final.",
+    )
     parser.add_argument("--db", type=Path, default=store.DEFAULT_DB)
-    parser.add_argument("--out", type=Path, default=OUT_DIR)
+    parser.add_argument("--out", type=Path, help="Default: docs/results/<split>.")
     args = parser.parse_args(argv)
-    result = evaluate(store.connect(args.db), args.primary, args.ablation, args.out)
-    print(f"{result['frames']} test frames; results in {args.out / 'results.md'}")
+    if args.split == "holdout" and not args.final:
+        parser.error("the holdout half is locked: pass --final, once, when the model is final")
+    out = args.out or Path("docs/results") / args.split
+    result = evaluate(store.connect(args.db), args.primary, args.ablation, out, half=args.split)
+    print(f"{result['frames']} test frames ({args.split}); results in {out / 'results.md'}")
 
 
 if __name__ == "__main__":

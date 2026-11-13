@@ -72,3 +72,18 @@ def test_evaluate_writes_report_matrices_and_failures(conn, tmp_path):
     for model in (CLIP, FT):
         assert (out / f"confusion_{model}.png").exists()
     assert (out / "failures.jpg").exists()
+
+
+def test_scores_one_half_and_locks_the_holdout(conn, tmp_path):
+    from tagger import eval_split
+
+    split_path = tmp_path / "split.json"
+    eval_split.save_split(
+        {"dev": ["/d/Videos/Azores/GX01.MP4"], "holdout": ["/d/x/bahamas_shared/Day 1/IMG.jpg"]},
+        split_path,
+    )
+    dev = ev.evaluate(conn, FT, [], tmp_path / "dev", half="dev", split_path=split_path)
+    assert dev["frames"] == 3  # the GoPro clip's usable frames only
+    assert "**dev** half" in (tmp_path / "dev" / "results.md").read_text()
+    with pytest.raises(SystemExit):
+        ev.main(["--primary", FT, "--split", "holdout"])  # no --final

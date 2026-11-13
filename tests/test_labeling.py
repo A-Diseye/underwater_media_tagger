@@ -131,3 +131,19 @@ def test_undo_and_selection_validation(conn):
     label(conn, image_id, "fish")
     store.delete_label(conn, image_id, labeling.SOURCE)
     assert labeling.label_counts(conn)["fish"] == 0
+
+
+def test_picks_and_quotas_can_be_limited_to_some_clips(conn):
+    [in_half] = add_clip(conn, "azores", [(0, ranked_scores("turtles"))], "A.MP4")
+    [other] = add_clip(conn, "azores", [(0, ranked_scores("turtles"))], "B.MP4")
+    label(conn, other, "turtles")
+    half = frozenset(
+        {conn.execute("select media_id from images where id=?", (in_half,)).fetchone()[0]}
+    )
+    assert labeling.label_counts(conn, half)["turtles"] == 0  # the label in clip B doesn't count
+    picks = {
+        labeling.next_frame(conn, random.Random(s), media_ids=half).image_id for s in range(10)
+    }
+    assert picks == {in_half}
+    assert [c["path"] for c in labeling.library_clips(conn, "azores", half)] == ["/d/azores/A.MP4"]
+    assert labeling.next_frame(conn, random.Random(0), media_ids=frozenset()) is None
