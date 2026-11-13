@@ -50,6 +50,10 @@ PRICES = {
 ANIMAL_CATEGORIES = ("turtles", "rays", "fish", "invertebrates")
 TARGET = 100
 BUDGET_USD = 5.00
+# Wide runs (--wide): extra medium/wide training photos, plus a wide validation set.
+WIDE_TARGET = 50
+WIDE_VAL_TARGET = 30
+WIDE_BUDGET_USD = 2.00
 MAX_TURNS = 40
 MAX_BATCH = 40  # photos checked per collect_from_taxon call
 MAX_PAGES = 5  # observation pages read per call, so capped species can't page forever
@@ -116,9 +120,11 @@ Cover the whole range of each category, roughly evenly, so the model learns what
 like in general rather than one kind of animal:
 - turtles: green, hawksbill, loggerhead, and other sea turtles.
 - rays: manta and devil rays, eagle rays, and stingrays.
-- fish: many reef fish families (for example butterflyfish, angelfish, parrotfish, groupers, \
-wrasses, triggerfish), eels, sharks, and schools of fish. Camouflaged bottom fish like \
-scorpionfish, flounder, and lizardfish are useful hard cases, but keep them a small share.
+- fish: colorful reef families (butterflyfish, angelfish, parrotfish, triggerfish) and just as \
+much the plainer and temperate fish divers see all the time (sea bream, wrasses, groupers, \
+damselfish, snappers, jacks, barracuda, mullet), eels, sharks, and schools of fish. Camouflaged \
+bottom fish like scorpionfish, flounder, and lizardfish are useful hard cases, but keep them a \
+small share.
 - invertebrates: nudibranchs; crabs, shrimp, and lobsters; sea stars and urchins; octopus, squid, \
 and cuttlefish; clams and other shelled mollusks.
 get_progress shows how many kept photos came from each taxon you collected from. Use it to find \
@@ -126,6 +132,16 @@ and fill the gaps.
 
 Stop once every category has reached its target, or when the budget is nearly gone or nothing \
 productive is left. Finish with a short summary of what you collected."""
+
+# Added to the system prompt for wide runs (--wide).
+WIDE_NOTE = """
+
+This run collects a different kind of photo: the animal is clearly the subject but is NOT a \
+close-up. Medium shots, and wide shots where the animal is small within a reef, wreck, sand, or \
+open-water scene, the way divers often film them. Close-up portraits are rejected automatically \
+(reason close_up). Groups usually photographed as macro portraits (nudibranchs, small shrimp) \
+will be rejected often; favor animals that are usually seen in wider scenes. Each category needs \
+both training photos and separate validation photos; get_progress shows both counts."""
 
 TOOLS = [
     {
@@ -183,6 +199,19 @@ class PhotoCheck(BaseModel):
     reason: str
 
 
+FRAMING_PROMPT = """
+framing: how much of the frame the main subject fills.
+- close-up: it fills most of the frame, like a portrait
+- medium: it is clear, but its surroundings take up a good part of the frame
+- wide: it is small within a larger reef, wreck, sand, or open-water scene"""
+
+
+class FramedPhotoCheck(PhotoCheck):
+    """The check for wide runs: the same answers plus how the subject is framed."""
+
+    framing: Literal["close-up", "medium", "wide"]
+
+
 def category_for(taxon: dict) -> str | None:
     """The category a taxon belongs to, or None if it's outside the animals we collect."""
     lineage = {taxon["id"], *taxon.get("ancestor_ids", [])}
@@ -228,7 +257,9 @@ def cost_usd(model: str, usage) -> float:
     return tokens / 1_000_000
 
 
-def check_photo(client, data: bytes) -> tuple[PhotoCheck | None, float]:
+def check_photo(
+    client, data: bytes, prompt: str = CHECK_PROMPT, answer: type[PhotoCheck] = PhotoCheck
+) -> tuple[PhotoCheck | None, float]:
     """Ask Haiku about one photo. Returns (answer or None if it couldn't answer, cost)."""
     image = {
         "type": "base64",
@@ -240,13 +271,13 @@ def check_photo(client, data: bytes) -> tuple[PhotoCheck | None, float]:
             model=CHECK_MODEL,
             max_tokens=1024,
             output_config={"effort": "low"},
-            output_format=PhotoCheck,
+            output_format=answer,
             messages=[
                 {
                     "role": "user",
                     "content": [
                         {"type": "image", "source": image},
-                        {"type": "text", "text": CHECK_PROMPT},
+                        {"type": "text", "text": prompt},
                     ],
                 }
             ],
@@ -308,6 +339,7 @@ class State:
     species: Counter = field(default_factory=Counter)  # (category, taxon id) -> photos kept
     groups: Counter = field(default_factory=Counter)  # (category, taxon collected from) -> kept
     reasons: Counter = field(default_factory=Counter)  # (category, reason) -> photos rejected
+    split_kept: Counter = field(default_factory=Counter)  # (category, split) -> photos kept
     seen: set[int] = field(default_factory=set)  # observation ids already decided
     spent: float = 0.0
 
@@ -330,6 +362,7 @@ class State:
             self.species[event["category"], event["taxon_id"]] += 1
             # Photos from before groups were logged count under their own species.
             self.groups[event["category"], event.get("group") or event["species"]] += 1
+            self.split_kept[event["category"], event.get("split", "train")] += 1
         else:
             self.reasons[event["category"], event["reason"]] += 1
 
@@ -337,28 +370,63 @@ class State:
 class Curator:
     """The agent's tools, and the bookkeeping behind them."""
 
-    def __init__(self, client, inat, data_dir: Path, target: int, budget: float) -> None:
+    def __init__(
+        self,
+        client,
+        inat,
+        data_dir: Path,
+        target: int,
+        budget: float,
+        wide: bool = False,
+        val_target: int = 0,
+    ) -> None:
+        """`wide`: collect medium and wide shots, `target` for training and `val_target` for a
+        separate wide-framing validation set (data/val_wide), with their own log and budget."""
         self.client, self.inat = client, inat
         self.data_dir, self.target, self.budget = data_dir, target, budget
-        self.log_path = data_dir / "curation" / "log.jsonl"
+        self.wide, self.val_target = wide, val_target
+        main_log = data_dir / "curation" / "log.jsonl"
+        self.log_path = data_dir / "curation" / "wide_log.jsonl" if wide else main_log
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
         self.state = State.load(self.log_path)
+        if wide:  # never re-check, or duplicate, a photo the main run already decided on
+            self.state.seen |= State.load(main_log).seen
         self.cursor: dict[int, int] = {}  # taxon id -> lowest observation id read so far
         self.taxon_names: dict[int, str] = {}  # taxon id -> readable name, from searches
 
+    def targets(self) -> dict[str, int]:
+        """Photos to keep per split: training only, or training plus wide validation."""
+        return {"train": self.target, "val_wide": self.val_target} if self.wide else {}
+
+    def split_full(self, category: str, split: str) -> bool:
+        return self.state.split_kept[category, split] >= self.targets()[split]
+
+    def category_full(self, category: str) -> bool:
+        if self.wide:
+            return all(self.split_full(category, s) for s in self.targets())
+        return self.state.kept[category] >= self.target
+
     @property
     def done(self) -> bool:
-        return all(self.state.kept[c] >= self.target for c in ANIMAL_CATEGORIES)
+        return all(self.category_full(c) for c in ANIMAL_CATEGORIES)
 
     @property
     def over_budget(self) -> bool:
         return self.state.spent >= self.budget
 
+    def total_target(self) -> int:
+        return self.target + (self.val_target if self.wide else 0)
+
     def species_cap(self, category: str) -> int:
-        return math.ceil(self.target * SPECIES_SHARE[category])
+        return math.ceil(self.total_target() * SPECIES_SHARE[category])
 
     def group_cap(self) -> int:
-        return math.ceil(self.target * GROUP_SHARE)
+        return math.ceil(self.total_target() * GROUP_SHARE)
+
+    def split_of(self, observer_id: int) -> str:
+        """Train or validation, by photographer. Wide validation photos go to their own set."""
+        split = split_for(observer_id)
+        return "val_wide" if self.wide and split == "val" else split
 
     def group_name(self, taxon_id: int) -> str:
         """A stable, readable name for a taxon, so its group cap holds across runs."""
@@ -390,6 +458,10 @@ class Curator:
                 c: {
                     "kept": self.state.kept[c],
                     "target": self.target,
+                    **(
+                        {f"kept_{s}": self.state.split_kept[c, s] for s in self.targets()}
+                        | {f"target_{s}": t for s, t in self.targets().items()}
+                    ),
                     "species_used": sum(1 for cat, _ in self.state.species if cat == c),
                     "kept_by_taxon_collected": dict(
                         Counter(
@@ -450,15 +522,22 @@ class Curator:
         if not is_jpeg:
             event["reason"] = "unreadable"
         else:
-            check, event["cost_usd"] = check_photo(self.client, data)
+            if self.wide:
+                check, event["cost_usd"] = check_photo(
+                    self.client, data, CHECK_PROMPT + FRAMING_PROMPT, FramedPhotoCheck
+                )
+            else:
+                check, event["cost_usd"] = check_photo(self.client, data)
             if check is None:
                 event["reason"] = "check_failed"
             else:
                 event["check"] = check.model_dump()
                 event["reason"] = rejection(check, category)
+                if event["reason"] is None and self.wide and check.framing == "close-up":
+                    event["reason"] = "close_up"
 
         if event["reason"] is None:
-            split = split_for(event["observer_id"])
+            split = self.split_of(event["observer_id"])
             path = self.data_dir / split / category / f"inat_{observation['id']}.jpg"
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(data)
@@ -486,8 +565,12 @@ class Curator:
                     skipped["outside_categories"] += 1
                 elif observation["id"] in self.state.seen:
                     skipped["already_seen"] += 1
-                elif self.state.kept[category] >= self.target:
+                elif self.category_full(category):
                     skipped["category_full"] += 1
+                elif self.wide and self.split_full(
+                    category, self.split_of(observation["user"]["id"])
+                ):
+                    skipped["split_full"] += 1
                 elif self.state.species[category, observation["taxon"]["id"]] >= self.species_cap(
                     category
                 ):
@@ -544,7 +627,14 @@ def run_agent(curator: Curator, client, max_turns: int = MAX_TURNS) -> str:
     Written by hand rather than with the SDK's tool runner so the budget check on each turn,
     and the loop itself, are plain to see. Returns why the run stopped.
     """
-    goal = f"Collect {curator.target} photos per category. Budget: ${curator.budget:.2f}."
+    if curator.wide:
+        goal = (
+            f"Collect {curator.target} training and {curator.val_target} validation photos per "
+            f"category, medium or wide shots only. Budget: ${curator.budget:.2f}."
+        )
+    else:
+        goal = f"Collect {curator.target} photos per category. Budget: ${curator.budget:.2f}."
+    system = AGENT_SYSTEM + WIDE_NOTE if curator.wide else AGENT_SYSTEM
     messages: list[dict] = [{"role": "user", "content": goal}]
     for turn in range(1, max_turns + 1):
         if curator.done:
@@ -558,7 +648,7 @@ def run_agent(curator: Curator, client, max_turns: int = MAX_TURNS) -> str:
             fallbacks="default",
             cache_control={"type": "ephemeral"},
             output_config={"effort": "medium"},
-            system=AGENT_SYSTEM,
+            system=system,
             tools=TOOLS,
             messages=messages,
         )
@@ -589,8 +679,14 @@ def run_agent(curator: Curator, client, max_turns: int = MAX_TURNS) -> str:
 
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--target", type=int, default=TARGET, help="Photos to keep per category.")
-    parser.add_argument("--budget", type=float, default=BUDGET_USD, help="Hard stop, in dollars.")
+    parser.add_argument("--target", type=int, help="Training photos to keep per category.")
+    parser.add_argument("--budget", type=float, help="Hard stop, in dollars.")
+    parser.add_argument(
+        "--wide",
+        action="store_true",
+        help="Collect medium and wide shots (not close-ups), plus a wide validation set.",
+    )
+    parser.add_argument("--val-target", type=int, default=WIDE_VAL_TARGET)
     parser.add_argument("--max-turns", type=int, default=MAX_TURNS)
     parser.add_argument("--data-dir", type=Path, default=Path("data"))
     args = parser.parse_args(argv)
@@ -598,7 +694,14 @@ def main(argv: list[str] | None = None) -> None:
     # Loaded here only, so the key never reaches the shell that runs Claude Code.
     load_dotenv()
     client = anthropic.Anthropic()
-    curator = Curator(client, INat(), args.data_dir, args.target, args.budget)
+    if args.wide:
+        target, budget = args.target or WIDE_TARGET, args.budget or WIDE_BUDGET_USD
+        curator = Curator(
+            client, INat(), args.data_dir, target, budget, wide=True, val_target=args.val_target
+        )
+    else:
+        target, budget = args.target or TARGET, args.budget or BUDGET_USD
+        curator = Curator(client, INat(), args.data_dir, target, budget)
     print(f"Stopped: {run_agent(curator, client, args.max_turns)}")
     print(json.dumps(curator.get_progress(), indent=2))
     print(f"Spent ${curator.state.spent:.2f}")

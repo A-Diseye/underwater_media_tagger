@@ -264,3 +264,63 @@ def test_made_up_taxon_id_is_a_tool_error(tmp_path):
     message, is_error = curator.run_tool("collect_from_taxon", {"taxon_id": 64, "n": 5})
     assert is_error and "no iNaturalist taxon" in message
     assert curator.client.messages.calls == 0
+
+
+def framed(framing="wide", category="rays") -> ci.FramedPhotoCheck:
+    return ci.FramedPhotoCheck(
+        underwater=True,
+        animal_is_main_subject=True,
+        category=category,
+        reason="test",
+        framing=framing,
+    )
+
+
+def wide_curator(tmp_path, pages, answer, target=4, val_target=2):
+    client = SimpleNamespace(messages=FakeChecks(answer))
+    return ci.Curator(
+        client, FakeINat(pages), tmp_path, target, 5.0, wide=True, val_target=val_target
+    )
+
+
+# Photographers the train/val rule sends to each side.
+TRAIN_OBSERVERS = [o for o in range(1, 200) if ci.split_for(o) == "train"]
+VAL_OBSERVERS = [o for o in range(1, 200) if ci.split_for(o) == "val"]
+
+
+def test_wide_run_rejects_close_ups(tmp_path):
+    curator = wide_curator(
+        tmp_path, [[observation(1, observer=TRAIN_OBSERVERS[0])]], framed("close-up")
+    )
+    summary = curator.collect_from_taxon(RAYS, 5)
+    assert summary["rejected"] == {"close_up": 1}
+    assert not list(tmp_path.rglob("*.jpg"))
+
+
+def test_wide_validation_photos_go_to_their_own_folder(tmp_path):
+    photos = [
+        observation(1, species=1001, observer=TRAIN_OBSERVERS[0]),
+        observation(2, species=1002, observer=VAL_OBSERVERS[0]),
+    ]
+    curator = wide_curator(tmp_path, [photos], framed("medium"))
+    assert curator.collect_from_taxon(RAYS, 5)["kept"] == 2
+    saved = {p.relative_to(tmp_path).parts[0] for p in tmp_path.rglob("*.jpg")}
+    assert saved == {"train", "val_wide"}  # never data/val, the close-up validation set
+    progress = curator.get_progress()["categories"]["rays"]
+    assert (progress["kept_train"], progress["kept_val_wide"]) == (1, 1)
+
+
+def test_wide_run_skips_photos_the_main_run_decided(tmp_path):
+    main = curator_for(tmp_path, [[observation(1)]])
+    main.collect_from_taxon(RAYS, 5)
+    wide = wide_curator(tmp_path, [[observation(1)]], framed())
+    assert wide.collect_from_taxon(RAYS, 5)["skipped"] == {"already_seen": 1}
+    assert wide.client.messages.calls == 0
+
+
+def test_wide_run_fills_each_side_separately(tmp_path):
+    photos = [observation(i, species=1000 + i, observer=TRAIN_OBSERVERS[i]) for i in range(1, 4)]
+    curator = wide_curator(tmp_path, [photos], framed(), target=1, val_target=1)
+    summary = curator.collect_from_taxon(RAYS, 5)
+    assert summary["kept"] == 1 and summary["skipped"] == {"split_full": 2}
+    assert not curator.category_full("rays")  # validation still needs a photo
