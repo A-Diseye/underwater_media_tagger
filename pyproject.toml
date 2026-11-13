@@ -28,6 +28,7 @@ dev = [
 # Heavy GPU dependencies live in their own group so CI can skip them.
 ml = [
     "open-clip-torch>=3.3.0",
+    "timm>=1.0.30",
     "torch>=2.6",
     "torchvision>=0.21",
 ]

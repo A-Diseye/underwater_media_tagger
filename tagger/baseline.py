@@ -125,10 +125,12 @@ class ClipBaseline:
         return results
 
 
-def tag_store(conn, baseline: ClipBaseline, batch_size: int = 64) -> int:
-    """Predict every image in the database that has no baseline prediction yet.
+def tag_store(conn, baseline, batch_size: int = 64, model_id: str = MODEL_ID) -> int:
+    """Predict every image in the database that has no prediction from `model_id` yet.
 
-    Commits after each batch so an interrupted run keeps its progress. Returns the count tagged.
+    `baseline` is anything with predict_paths (CLIP here, the fine-tuned classifier in
+    tagger/classify.py). Commits after each batch so an interrupted run keeps its progress.
+    Returns the count tagged.
     """
     from tagger import store
 
@@ -138,14 +140,14 @@ def tag_store(conn, baseline: ClipBaseline, batch_size: int = 64) -> int:
         WHERE id NOT IN (SELECT image_id FROM predictions WHERE model = ?)
         ORDER BY id
         """,
-        (MODEL_ID,),
+        (model_id,),
     ).fetchall()
     for i in range(0, len(rows), batch_size):
         chunk = rows[i : i + batch_size]
         scores = baseline.predict_paths([r["file_path"] for r in chunk], batch_size)
         with conn:
             for row, s in zip(chunk, scores, strict=True):
-                store.add_prediction(conn, row["id"], MODEL_ID, s)
+                store.add_prediction(conn, row["id"], model_id, s)
         print(f"tagged {min(i + batch_size, len(rows))}/{len(rows)}", flush=True)
     return len(rows)
 

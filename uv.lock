@@ -1312,6 +1312,7 @@ dev = [
 ]
 ml = [
     { name = "open-clip-torch" },
+    { name = "timm" },
     { name = "torch" },
     { name = "torchvision" },
 ]
@@ -1338,6 +1339,7 @@ dev = [
 ]
 ml = [
     { name = "open-clip-torch", specifier = ">=3.3.0" },
+    { name = "timm", specifier = ">=1.0.30" },
     { name = "torch", specifier = ">=2.6", index = "https://download.pytorch.org/whl/cu126" },
     { name = "torchvision", specifier = ">=0.21", index = "https://download.pytorch.org/whl/cu126" },
 ]

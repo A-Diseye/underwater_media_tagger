@@ -160,14 +160,16 @@ def add_prediction(
 def evaluation_rows(conn: sqlite3.Connection, model: str) -> list[sqlite3.Row]:
     """Test-set images with both a usable hand label and a prediction from `model`.
 
-    Each row has image_id, file_path, true_label, selection, predicted, confidence, and
-    scores (dict).
+    Each row has image_id, file_path, trip, source (original file path), t_s, true_label,
+    selection, predicted, confidence, and scores (dict).
     """
     rows = conn.execute(
         """
-        SELECT i.id AS image_id, i.file_path, l.label AS true_label, l.selection,
+        SELECT i.id AS image_id, i.file_path, m.trip, m.path AS source, i.t_s,
+               l.label AS true_label, l.selection,
                p.label AS predicted, p.confidence, p.scores
         FROM images i
+        JOIN media m ON m.id = i.media_id
         JOIN labels l ON l.image_id = i.id AND l.source = 'test_labeling'
         JOIN predictions p ON p.image_id = i.id AND p.model = ?
         WHERE l.label != ?
