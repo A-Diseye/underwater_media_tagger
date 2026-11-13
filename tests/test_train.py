@@ -77,3 +77,53 @@ def test_casts_can_be_switched_off():
     boosted = tr.BoostCast(p=1.0)(img)
     assert boosted[0].mean() <= img[0].mean() and boosted.max() <= 1
     assert tr.CASTS["none"] is None
+
+
+def test_zoom_out_pastes_the_animal_small_into_the_scene():
+    from PIL import Image as PILImage
+
+    animal = PILImage.new("RGB", (200, 150), (255, 0, 0))
+    scene = PILImage.new("RGB", (400, 300), (0, 0, 255))
+    out = tr.zoom_out(animal, scene)
+    assert out.size == scene.size
+    pixels = np.asarray(out)
+    red = (pixels[..., 0] > 200) & (pixels[..., 2] < 60)
+    assert 0 < red.mean() < 0.4  # the animal is there, and small
+    assert np.asarray(scene)[0, 0, 2] == 255  # the background photo itself isn't modified
+
+
+def test_zoom_out_only_touches_animal_photos(tmp_path):
+    make_split(tmp_path / "train", 1)
+    folder = tr.ZoomOutFolder(tmp_path / "train", np.asarray, p=1.0)
+    for i, (path, target) in enumerate(folder.samples):
+        zoomed, _ = folder[i]
+        with Image.open(path) as img:
+            original = np.asarray(img.convert("RGB"))
+        changed = zoomed.shape != original.shape or not np.array_equal(zoomed, original)
+        assert changed == (CATEGORIES[target] in tr.ANIMALS)
+
+
+def test_epochs_are_picked_on_both_validation_sets(tmp_path):
+    make_split(tmp_path / "data" / "train", 2)
+    make_split(tmp_path / "data" / "val", 1)
+    for category in tr.ANIMALS:  # the wide set has animal categories only
+        folder = tmp_path / "data" / "val_wide" / category
+        folder.mkdir(parents=True)
+        Image.fromarray(np.full((40, 40, 3), 90, dtype=np.uint8)).save(folder / "0.jpg")
+    cfg = tr.Config(
+        run_name="wide",
+        data_dir=tmp_path / "data",
+        models_dir=tmp_path / "models",
+        epochs_head=1,
+        epochs_full=0,
+        batch_size=4,
+        pretrained=False,
+        image_size=32,
+        device="cpu",
+        workers=0,
+        zoom_out=0.5,
+    )
+    best = tr.train(cfg)["best"]
+    assert best["val_wide"] is not None
+    expected = (best["balanced_accuracy"] + best["val_wide"]["balanced_accuracy"]) / 2
+    assert best["selection_score"] == pytest.approx(expected)

@@ -14,8 +14,13 @@ GoPro footage (blue-green, murky, soft). Three color-cast options, compared on v
 - "boost": the first version, a shortcut that cuts red and boosts blue and green.
 - "none".
 
-The best epoch is picked by balanced accuracy (average of per-category accuracy) on the
-validation set only. The test set is never read here.
+Zoom-out (v2): my footage usually shows animals small inside a wide scene, while internet
+photos are close-ups. With --zoom-out P, an animal photo is sometimes shrunk and pasted, with a
+soft edge, into a random training scenery photo, keeping its label.
+
+The best epoch is picked by balanced accuracy (average of per-category accuracy) on validation
+only: data/val, averaged with data/val_wide (wide-framing internet photos) when it exists. The
+test set is never read here.
 
 Run with:  uv run python -m training.train [--cast depth|boost|none] [--seed N] [--run-name NAME]
 """
@@ -33,6 +38,7 @@ from pathlib import Path
 import numpy as np
 import timm
 import torch
+from PIL import Image, ImageDraw, ImageFilter
 from torch import nn
 from torch.utils.data import DataLoader
 from torchvision import datasets, transforms
@@ -60,6 +66,7 @@ class Config:
     image_size: int | None = None  # None: the model's own size (224); tests use small images
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
     workers: int = 4
+    zoom_out: float = 0.0  # chance an animal training photo is pasted small into a scenery photo
 
 
 class DepthCast:
@@ -147,13 +154,62 @@ def build_transforms(data_cfg: dict, size: int, cast: str):
 
 class CategoryFolder(datasets.ImageFolder):
     """ImageFolder with class indexes in CATEGORIES order (not alphabetical), so index 0 is
-    always turtles everywhere in the project. Every category folder must exist."""
+    always turtles everywhere in the project. Every category folder must exist, unless
+    `allow_missing` (the wide validation set has animal categories only)."""
+
+    def __init__(self, root, transform=None, allow_missing: bool = False):
+        self.allow_missing = allow_missing
+        super().__init__(root, transform, allow_empty=allow_missing)
 
     def find_classes(self, directory):
         missing = [c for c in CATEGORIES if not (Path(directory) / c).is_dir()]
-        if missing:
+        if missing and not self.allow_missing:
             raise FileNotFoundError(f"missing category folders in {directory}: {missing}")
         return list(CATEGORIES), {c: i for i, c in enumerate(CATEGORIES)}
+
+
+ANIMALS = ("turtles", "rays", "fish", "invertebrates")
+
+
+def zoom_out(animal: Image.Image, background: Image.Image, scale=(0.3, 0.6)) -> Image.Image:
+    """Paste `animal` small into `background`, with a feathered edge so there's no hard seam.
+
+    The animal's center stays in the middle half of the frame, so the random crop that follows
+    (which keeps at least 60% of the image) can't cut it out.
+    """
+    bg = background.convert("RGB").copy()
+    width = max(8, int(bg.width * random.uniform(*scale)))
+    height = max(8, int(animal.height * width / animal.width))
+    if height > bg.height * 0.8:
+        height = int(bg.height * 0.8)
+        width = max(8, int(animal.width * height / animal.height))
+    small = animal.convert("RGB").resize((width, height), Image.Resampling.BICUBIC)
+    cx = random.uniform(0.25, 0.75) * bg.width
+    cy = random.uniform(0.25, 0.75) * bg.height
+    x = int(min(max(cx - width / 2, 0), bg.width - width))
+    y = int(min(max(cy - height / 2, 0), bg.height - height))
+    feather = max(1, min(width, height) // 10)
+    mask = Image.new("L", (width, height), 0)
+    ImageDraw.Draw(mask).rectangle((feather, feather, width - feather, height - feather), fill=255)
+    bg.paste(small, (x, y), mask.filter(ImageFilter.GaussianBlur(feather / 2)))
+    return bg
+
+
+class ZoomOutFolder(CategoryFolder):
+    """The training set, where animal photos are sometimes zoomed out into a scenery photo."""
+
+    def __init__(self, root, transform, p: float):
+        super().__init__(root, transform)
+        self.p = p
+        scenery = CATEGORIES.index("scenery")
+        self.backgrounds = [path for path, target in self.samples if target == scenery]
+
+    def __getitem__(self, index):
+        path, target = self.samples[index]
+        img = self.loader(path)
+        if CATEGORIES[target] in ANIMALS and self.backgrounds and random.random() < self.p:
+            img = zoom_out(img, self.loader(random.choice(self.backgrounds)))
+        return self.transform(img), target
 
 
 def seed_everything(seed: int) -> None:
@@ -205,8 +261,10 @@ def train(cfg: Config) -> dict:
     data_cfg = timm.data.resolve_data_config({}, model=model)
     size = cfg.image_size or data_cfg["input_size"][-1]
     train_tf, val_tf = build_transforms(data_cfg, size, cfg.cast)
-    train_set = CategoryFolder(cfg.data_dir / "train", train_tf)
-    val_set = CategoryFolder(cfg.data_dir / "val", val_tf)
+    train_set = ZoomOutFolder(cfg.data_dir / "train", train_tf, cfg.zoom_out)
+    val_sets = {"val": CategoryFolder(cfg.data_dir / "val", val_tf)}
+    if (cfg.data_dir / "val_wide").is_dir():
+        val_sets["val_wide"] = CategoryFolder(cfg.data_dir / "val_wide", val_tf, allow_missing=True)
     loader_args = {
         "batch_size": cfg.batch_size,
         "num_workers": cfg.workers,
@@ -215,8 +273,11 @@ def train(cfg: Config) -> dict:
     train_loader = DataLoader(
         train_set, shuffle=True, generator=torch.Generator().manual_seed(cfg.seed), **loader_args
     )
-    val_loader = DataLoader(val_set, shuffle=False, **loader_args)
-    print(f"{len(train_set)} training and {len(val_set)} validation images, device {device}")
+    val_loaders = {
+        name: DataLoader(v, shuffle=False, **loader_args) for name, v in val_sets.items()
+    }
+    sizes = ", ".join(f"{len(v)} {name}" for name, v in val_sets.items())
+    print(f"{len(train_set)} training images; validation: {sizes}; device {device}")
 
     model.to(device)
     criterion = nn.CrossEntropyLoss(label_smoothing=cfg.label_smoothing)
@@ -226,7 +287,7 @@ def train(cfg: Config) -> dict:
 
     cfg.models_dir.mkdir(parents=True, exist_ok=True)
     checkpoint_path = cfg.models_dir / f"{cfg.run_name}.pt"
-    history, best = [], {"balanced_accuracy": -1.0}
+    history, best = [], {"selection_score": -1.0}
 
     stages = [("head", cfg.epochs_head, cfg.lr_head), ("full", cfg.epochs_full, cfg.lr_full)]
     epoch = 0
@@ -256,7 +317,13 @@ def train(cfg: Config) -> dict:
                 scheduler.step()
                 loss_sum += loss.item() * len(targets)
                 n += len(targets)
-            val = evaluate(model, val_loader, device, criterion)
+            scores = {
+                name: evaluate(model, loader, device, criterion)
+                for name, loader in val_loaders.items()
+            }
+            val = scores["val"]
+            # Pick epochs on every validation set equally: close-ups and wide shots.
+            selection = sum(v["balanced_accuracy"] for v in scores.values()) / len(scores)
             row = {
                 "epoch": epoch,
                 "stage": stage,
@@ -264,12 +331,23 @@ def train(cfg: Config) -> dict:
                 "val_loss": round(val["loss"], 4),
                 "val_accuracy": round(val["accuracy"], 4),
                 "val_balanced_accuracy": round(val["balanced_accuracy"], 4),
+                **{
+                    f"{name}_balanced_accuracy": round(v["balanced_accuracy"], 4)
+                    for name, v in scores.items()
+                    if name != "val"
+                },
+                "selection_score": round(selection, 4),
                 "seconds": round(time.time() - started, 1),
             }
             history.append(row)
             print(row, flush=True)
-            if val["balanced_accuracy"] > best["balanced_accuracy"]:
-                best = {**val, "epoch": epoch}
+            if selection > best["selection_score"]:
+                best = {
+                    **val,
+                    "epoch": epoch,
+                    "selection_score": selection,
+                    "val_wide": scores.get("val_wide"),
+                }
                 torch.save(
                     {
                         "model_name": MODEL_NAME,
@@ -298,6 +376,7 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--epochs-head", type=int, default=Config.epochs_head)
     parser.add_argument("--epochs-full", type=int, default=Config.epochs_full)
     parser.add_argument("--seed", type=int, default=Config.seed)
+    parser.add_argument("--zoom-out", type=float, default=Config.zoom_out)
     args = parser.parse_args(argv)
     cfg = Config(
         run_name=args.run_name,
@@ -305,6 +384,7 @@ def main(argv: list[str] | None = None) -> None:
         epochs_head=args.epochs_head,
         epochs_full=args.epochs_full,
         seed=args.seed,
+        zoom_out=args.zoom_out,
     )
     result = train(cfg)
     best = result["best"]
@@ -313,6 +393,12 @@ def main(argv: list[str] | None = None) -> None:
         f"accuracy {best['accuracy']:.3f}"
     )
     print("per category:", {c: round(a, 3) for c, a in best["per_class"].items()})
+    if best.get("val_wide"):
+        wide = best["val_wide"]
+        print(
+            f"wide validation: balanced accuracy {wide['balanced_accuracy']:.3f}, per category",
+            {c: round(a, 3) for c, a in wide["per_class"].items() if c in ANIMALS},
+        )
     print("saved", result["checkpoint"])
 
 
