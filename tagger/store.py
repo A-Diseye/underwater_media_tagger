@@ -21,6 +21,9 @@ DEFAULT_DB = Path("data/tagger.db")
 
 UNUSABLE = "unusable"
 LABEL_SOURCES = ("test_labeling", "manual_correction")
+# A tag I fixed in the gallery. It overrides the model's label for display and search, but never
+# touches test labels (separate source) and is never used for training.
+CORRECTION = "manual_correction"
 # How a test frame was chosen for labeling, so results can be split by it later:
 # "random", "browse", or "clip_top3:<category>" (CLIP had <category> in its top 3).
 SELECTIONS = ("random", "browse", *(f"clip_top3:{c}" for c in CATEGORIES))
@@ -218,13 +221,16 @@ def gallery(
 ) -> tuple[list[dict], int]:
     """One page of images with `model`'s predictions, filtered. Returns (rows, total matches).
 
-    Empty or None `labels`/`trips`/`image_ids` means no filter. Each row has image_id,
-    media_id, file_path, trip, source (original file path), t_s, label, confidence, and
+    A manual correction replaces the model's label (for display and the `labels` filter);
+    `model_label` keeps what the model said and `corrected` flags the row. Empty or None
+    `labels`/`trips`/`image_ids` means no filter. Each row has image_id, media_id, file_path,
+    trip, source (original file path), t_s, label, model_label, corrected, confidence, and
     scores (dict).
     """
     where = ["p.model = ?", "p.confidence >= ?"]
     params: list = [model, min_confidence]
-    for column, values in (("p.label", labels), ("m.trip", trips), ("i.id", image_ids)):
+    shown_label = "COALESCE(c.label, p.label)"
+    for column, values in ((shown_label, labels), ("m.trip", trips), ("i.id", image_ids)):
         if values:
             where.append(f"{column} IN ({', '.join('?' * len(values))})")
             params.extend(values)
@@ -232,20 +238,32 @@ def gallery(
         FROM images i
         JOIN media m ON m.id = i.media_id
         JOIN predictions p ON p.image_id = i.id
+        LEFT JOIN labels c ON c.image_id = i.id AND c.source = '{CORRECTION}'
         WHERE {" AND ".join(where)}
     """
     total = conn.execute(f"SELECT COUNT(*) {base}", params).fetchone()[0]
     rows = conn.execute(
         f"""
         SELECT i.id AS image_id, i.media_id, i.file_path, m.trip, m.path AS source, i.t_s,
-               p.label, p.confidence, p.scores
+               {shown_label} AS label, p.label AS model_label, c.label IS NOT NULL AS corrected,
+               p.confidence, p.scores
         {base}
         ORDER BY {GALLERY_ORDERS[order]}
         LIMIT ? OFFSET ?
         """,
         [*params, limit, offset],
     ).fetchall()
-    return [{**dict(r), "scores": json.loads(r["scores"])} for r in rows], total
+    return [
+        {**dict(r), "corrected": bool(r["corrected"]), "scores": json.loads(r["scores"])}
+        for r in rows
+    ], total
+
+
+def correction_for(conn: sqlite3.Connection, image_id: int) -> str | None:
+    row = conn.execute(
+        "SELECT label FROM labels WHERE image_id = ? AND source = ?", (image_id, CORRECTION)
+    ).fetchone()
+    return row["label"] if row else None
 
 
 def predictions_for(conn: sqlite3.Connection, image_id: int) -> dict[str, dict]:

@@ -71,9 +71,36 @@ def show_details(row: dict) -> None:
         col.bar_chart(
             scores, x="category", y="probability", horizontal=True, sort="-probability", height=220
         )
+    correction_controls(row["image_id"])
     if row["trip"] == ingest.UPLOAD_TRIP and st.button("Remove this upload", type="primary"):
         remove_upload(row["media_id"])
         st.rerun()  # closes the dialog and redraws the page without the removed upload
+
+
+def correction_controls(image_id: int) -> None:
+    """Fix a wrong tag. The correction only changes what the gallery shows and searches: my
+    test labels and the models stay as they are."""
+    conn = store.connect()
+    current = store.correction_for(conn, image_id)
+    st.divider()
+    with st.container(horizontal=True, vertical_alignment="bottom"):
+        choice = st.selectbox(
+            "Correct tag",
+            CATEGORIES,
+            index=CATEGORIES.index(current) if current else None,
+            placeholder="Pick the right category",
+            key=f"correct-{image_id}",
+        )
+        if st.button("Save correction", type="primary", disabled=choice in (None, current)):
+            with conn:
+                store.set_label(conn, image_id, choice, store.CORRECTION)
+            st.rerun()  # closes the dialog; the grid shows the corrected tag
+        if current and st.button("Remove correction"):
+            with conn:
+                store.delete_label(conn, image_id, store.CORRECTION)
+            st.rerun()
+    if current:
+        st.caption(f"Corrected by you to **{current}**.")
 
 
 def remove_upload(media_id: int) -> None:
@@ -95,7 +122,10 @@ def image_grid(rows: list[dict]) -> None:
                 # Full frame, scaled down by the browser, so fullscreen shows the real image.
                 # Fine for a local app (~20 MB per 48-image page over localhost).
                 st.image(row["file_path"], width="stretch")
-                st.caption(f"**{row['label']}** {row['confidence']:.2f}")
+                if row["corrected"]:
+                    st.caption(f"**{row['label']}** ✎ corrected (model: {row['model_label']})")
+                else:
+                    st.caption(f"**{row['label']}** {row['confidence']:.2f}")
                 # Widget keys must be unique on the page, so each image appears only once.
                 if st.button("Details", key=f"details-{row['image_id']}"):
                     show_details(row)

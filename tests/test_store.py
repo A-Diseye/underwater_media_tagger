@@ -136,3 +136,31 @@ def test_import_manifest_loads_kept_frames_once(conn, tmp_path):
     photo = conn.execute("SELECT t_s FROM images WHERE file_path LIKE '%p.jpg'").fetchone()
     assert photo["t_s"] is None
     assert conn.execute("SELECT COUNT(*) FROM media").fetchone()[0] == 2
+
+
+def test_manual_correction_overrides_the_shown_label_but_not_test_labels():
+    conn = store.connect(":memory:")
+    media = store.add_media(conn, "/d/a.MP4", "video", "fp", "azores")
+    wrong = store.add_image(conn, media, "/f/1.jpg", t_s=0.0)
+    right = store.add_image(conn, media, "/f/2.jpg", t_s=30.0)
+    for image_id in (wrong, right):
+        store.add_prediction(
+            conn, image_id, "m", {c: (0.9 if c == "scenery" else 0.02) for c in CATEGORIES}
+        )
+    store.set_label(conn, wrong, "fish", "test_labeling", "random")  # my test label: untouched
+    store.set_label(conn, wrong, "turtles", store.CORRECTION)
+
+    rows, _ = store.gallery(conn, "m", order="as filmed")
+    first = rows[0]
+    assert (first["label"], first["model_label"], first["corrected"]) == (
+        "turtles",
+        "scenery",
+        True,
+    )
+    assert rows[1]["corrected"] is False
+    assert [r["image_id"] for r in store.gallery(conn, "m", labels=["turtles"])[0]] == [wrong]
+    assert store.correction_for(conn, wrong) == "turtles"
+    assert store.evaluation_rows(conn, "m")[0]["true_label"] == "fish"
+
+    store.delete_label(conn, wrong, store.CORRECTION)
+    assert store.gallery(conn, "m", labels=["turtles"])[1] == 0
