@@ -19,6 +19,9 @@ from tagger.baseline import ClipBaseline
 
 UPLOAD_TYPES = ["jpg", "jpeg", "png", "heic", "heif", "mp4", "mov"]
 GRID_COLUMNS = 6
+# What a tag can be corrected to: the categories, or unusable (fogged, on the boat, at the
+# surface, too dark or blurred to tell). The models themselves only predict the categories.
+CORRECTABLE = (*CATEGORIES, store.UNUSABLE)
 
 st.set_page_config(page_title="Underwater Media Tagger", page_icon="🐢", layout="wide")
 
@@ -86,8 +89,8 @@ def correction_controls(image_id: int) -> None:
     with st.container(horizontal=True, vertical_alignment="bottom"):
         choice = st.selectbox(
             "Correct tag",
-            CATEGORIES,
-            index=CATEGORIES.index(current) if current else None,
+            CORRECTABLE,
+            index=CORRECTABLE.index(current) if current else None,
             placeholder="Pick the right category",
             key=f"correct-{image_id}",
         )
@@ -124,6 +127,8 @@ def image_grid(rows: list[dict]) -> None:
                 st.image(row["file_path"], width="stretch")
                 if row["corrected"]:
                     st.caption(f"**{row['label']}** ✎ corrected (model: {row['model_label']})")
+                elif row["labeled_unusable"]:
+                    st.caption(f"**unusable** ✔ your label (model: {row['model_label']})")
                 else:
                     st.caption(f"**{row['label']}** {row['confidence']:.2f}")
                 # Widget keys must be unique on the page, so each image appears only once.
@@ -143,7 +148,12 @@ def gallery_page(conn) -> None:
         st.header("Filters")
         model_label = st.radio("Model", list(available), help="Whose guesses the grid shows.")
         model_id = available[model_label]
-        labels = st.multiselect("Predicted category", CATEGORIES)
+        labels = st.multiselect(
+            "Category",
+            CORRECTABLE,
+            help="The model's guess, or your correction where you made one. Only corrections "
+            "can be unusable.",
+        )
         trips = st.multiselect("Trip", store.trips(conn))
         min_conf = st.slider("Minimum confidence", 0.0, 1.0, 0.0, 0.05)
         order = st.selectbox("Sort", list(store.GALLERY_ORDERS))

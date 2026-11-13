@@ -164,3 +164,34 @@ def test_manual_correction_overrides_the_shown_label_but_not_test_labels():
 
     store.delete_label(conn, wrong, store.CORRECTION)
     assert store.gallery(conn, "m", labels=["turtles"])[1] == 0
+
+
+def test_a_frame_can_be_corrected_to_unusable():
+    conn = store.connect(":memory:")
+    media = store.add_media(conn, "/d/a.MP4", "video", "fp", "mexico")
+    image = store.add_image(conn, media, "/f/1.jpg", t_s=34.0)
+    store.add_prediction(conn, image, "m", {c: (0.9 if c == "diver" else 0.02) for c in CATEGORIES})
+    store.set_label(conn, image, store.UNUSABLE, store.CORRECTION)
+    [row], total = store.gallery(conn, "m", labels=[store.UNUSABLE])
+    assert total == 1 and (row["label"], row["model_label"]) == ("unusable", "diver")
+
+
+def test_only_my_unusable_test_labels_show_in_the_gallery():
+    conn = store.connect(":memory:")
+    media = store.add_media(conn, "/d/a.MP4", "video", "fp", "mexico")
+    ids = [store.add_image(conn, media, f"/f/{i}.jpg", t_s=i * 30.0) for i in range(3)]
+    for image_id in ids:
+        store.add_prediction(
+            conn, image_id, "m", {c: (0.9 if c == "diver" else 0.02) for c in CATEGORIES}
+        )
+    store.set_label(conn, ids[0], store.UNUSABLE, "test_labeling", "random")
+    store.set_label(conn, ids[1], "fish", "test_labeling", "random")  # stays the model's guess
+    store.set_label(conn, ids[2], store.UNUSABLE, "test_labeling", "random")
+    store.set_label(conn, ids[2], "turtles", store.CORRECTION)  # my correction wins
+
+    rows = {r["image_id"]: r for r in store.gallery(conn, "m", order="as filmed")[0]}
+    assert (rows[ids[0]]["label"], rows[ids[0]]["labeled_unusable"]) == ("unusable", True)
+    assert (rows[ids[1]]["label"], rows[ids[1]]["labeled_unusable"]) == ("diver", False)
+    assert (rows[ids[2]]["label"], rows[ids[2]]["corrected"]) == ("turtles", True)
+    assert rows[ids[2]]["labeled_unusable"] is False
+    assert store.gallery(conn, "m", labels=[store.UNUSABLE])[1] == 1

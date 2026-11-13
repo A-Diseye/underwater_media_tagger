@@ -221,15 +221,17 @@ def gallery(
 ) -> tuple[list[dict], int]:
     """One page of images with `model`'s predictions, filtered. Returns (rows, total matches).
 
-    A manual correction replaces the model's label (for display and the `labels` filter);
-    `model_label` keeps what the model said and `corrected` flags the row. Empty or None
+    A manual correction replaces the model's label (for display and the `labels` filter), and
+    so does a frame I labeled `unusable` for the test set, since the models can't predict that.
+    Every other label shown is the model's guess. `model_label` keeps what the model said,
+    `corrected` flags a manual correction, and `labeled_unusable` my test label. Empty or None
     `labels`/`trips`/`image_ids` means no filter. Each row has image_id, media_id, file_path,
-    trip, source (original file path), t_s, label, model_label, corrected, confidence, and
-    scores (dict).
+    trip, source (original file path), t_s, label, model_label, corrected, labeled_unusable,
+    confidence, and scores (dict).
     """
     where = ["p.model = ?", "p.confidence >= ?"]
     params: list = [model, min_confidence]
-    shown_label = "COALESCE(c.label, p.label)"
+    shown_label = "COALESCE(c.label, u.label, p.label)"
     for column, values in ((shown_label, labels), ("m.trip", trips), ("i.id", image_ids)):
         if values:
             where.append(f"{column} IN ({', '.join('?' * len(values))})")
@@ -239,6 +241,8 @@ def gallery(
         JOIN media m ON m.id = i.media_id
         JOIN predictions p ON p.image_id = i.id
         LEFT JOIN labels c ON c.image_id = i.id AND c.source = '{CORRECTION}'
+        LEFT JOIN labels u ON u.image_id = i.id AND u.source = 'test_labeling'
+                          AND u.label = '{UNUSABLE}'
         WHERE {" AND ".join(where)}
     """
     total = conn.execute(f"SELECT COUNT(*) {base}", params).fetchone()[0]
@@ -246,6 +250,7 @@ def gallery(
         f"""
         SELECT i.id AS image_id, i.media_id, i.file_path, m.trip, m.path AS source, i.t_s,
                {shown_label} AS label, p.label AS model_label, c.label IS NOT NULL AS corrected,
+               c.label IS NULL AND u.label IS NOT NULL AS labeled_unusable,
                p.confidence, p.scores
         {base}
         ORDER BY {GALLERY_ORDERS[order]}
@@ -254,7 +259,12 @@ def gallery(
         [*params, limit, offset],
     ).fetchall()
     return [
-        {**dict(r), "corrected": bool(r["corrected"]), "scores": json.loads(r["scores"])}
+        {
+            **dict(r),
+            "corrected": bool(r["corrected"]),
+            "labeled_unusable": bool(r["labeled_unusable"]),
+            "scores": json.loads(r["scores"]),
+        }
         for r in rows
     ], total
 
