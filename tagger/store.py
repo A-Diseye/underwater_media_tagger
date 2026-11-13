@@ -248,6 +248,22 @@ def gallery(
     return [{**dict(r), "scores": json.loads(r["scores"])} for r in rows], total
 
 
+def predictions_for(conn: sqlite3.Connection, image_id: int) -> dict[str, dict]:
+    """Every model's prediction for one image: {model: {label, confidence, scores}}."""
+    rows = conn.execute(
+        "SELECT model, label, confidence, scores FROM predictions WHERE image_id = ?",
+        (image_id,),
+    )
+    return {
+        r["model"]: {
+            "label": r["label"],
+            "confidence": r["confidence"],
+            "scores": json.loads(r["scores"]),
+        }
+        for r in rows
+    }
+
+
 def trips(conn: sqlite3.Connection) -> list[str]:
     rows = conn.execute("SELECT DISTINCT trip FROM media WHERE trip IS NOT NULL ORDER BY trip")
     return [r["trip"] for r in rows]

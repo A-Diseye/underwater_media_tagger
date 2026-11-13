@@ -54,5 +54,14 @@ def test_preprocessing_matches_training_validation(checkpoint):
     assert torch.allclose(classifier.preprocess(img), val_tf(img))
 
 
+def test_app_falls_back_when_the_weights_are_missing(tmp_path):
+    from tagger.classify import active_checkpoint
+
+    assert active_checkpoint(tmp_path / "missing.pt") is None
+    weights = tmp_path / "v2.pt"
+    weights.write_bytes(b"")
+    assert active_checkpoint(weights) == weights
+
+
 def test_model_id_comes_from_the_file_name():
     assert model_id_for("models/convnext_tiny_depth_s0.pt") == "convnext_tiny_depth_s0"

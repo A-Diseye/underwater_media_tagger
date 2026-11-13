@@ -7,19 +7,20 @@ a FastAPI endpoint or React frontend) can all call it the same way.
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
 from tagger import frames, store
-from tagger.baseline import MODEL_ID
 
 UPLOAD_TRIP = "uploads"
 UPLOAD_DIR = Path("data/uploads")
 
 
 class Tagger(Protocol):
-    """Anything that scores image files, e.g. ClipBaseline. Tests pass a fake."""
+    """Anything that scores image files, e.g. ClipBaseline or the fine-tuned Classifier.
+    Tests pass a fake."""
 
     def predict_paths(self, paths: list[str]) -> list[dict[str, float]]: ...
 
@@ -43,12 +44,14 @@ def save_upload(name: str, data: bytes, upload_dir: Path = UPLOAD_DIR) -> Path:
 def ingest_file(
     conn,
     path: Path,
-    tagger: Tagger,
+    taggers: Mapping[str, Tagger],
     frames_dir: Path = Path("data/frames"),
     trip: str = UPLOAD_TRIP,
-    model_id: str = MODEL_ID,
 ) -> IngestResult:
-    """Store and tag one photo or video.
+    """Store and tag one photo or video, with every model in `taggers` ({model id: tagger}).
+
+    Tagging with more than one model (the fine-tuned model and CLIP) keeps both answers for
+    every image, so the app can compare them.
 
     A file whose content is already stored is not processed again; its existing rows are
     returned. Videos go through the same blur and duplicate filters as the dive library.
@@ -86,15 +89,22 @@ def ingest_file(
         ]
 
     if image_ids:
-        scores = tagger.predict_paths([str(frames_dir / r.frame_path) for r in kept])
-        with conn:
-            for image_id, s in zip(image_ids, scores, strict=True):
-                store.add_prediction(conn, image_id, model_id, s)
+        paths = [str(frames_dir / r.frame_path) for r in kept]
+        for model_id, tagger in taggers.items():
+            scores = tagger.predict_paths(paths)
+            with conn:
+                for image_id, s in zip(image_ids, scores, strict=True):
+                    store.add_prediction(conn, image_id, model_id, s)
     return IngestResult(media_id, image_ids)
 
 
 def ingest_upload(
-    conn, name: str, data: bytes, tagger: Tagger, upload_dir: Path = UPLOAD_DIR, **kwargs
+    conn,
+    name: str,
+    data: bytes,
+    taggers: Mapping[str, Tagger],
+    upload_dir: Path = UPLOAD_DIR,
+    **kwargs,
 ) -> IngestResult:
     """Save an uploaded file and ingest it. Entry point for the upload UI and future API.
 
@@ -102,7 +112,7 @@ def ingest_upload(
     new copy on disk is redundant and gets deleted.
     """
     path = save_upload(name, data, upload_dir)
-    result = ingest_file(conn, path, tagger, **kwargs)
+    result = ingest_file(conn, path, taggers, **kwargs)
     if not result.new:
         stored = conn.execute("SELECT path FROM media WHERE id = ?", (result.media_id,)).fetchone()
         if Path(stored["path"]).resolve() != path.resolve():

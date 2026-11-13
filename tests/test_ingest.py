@@ -2,6 +2,7 @@ import cv2
 import pytest
 
 from tagger import CATEGORIES, ingest, store
+from tagger.baseline import MODEL_ID as CLIP
 from tests.test_frames import textured, write_video
 
 
@@ -28,10 +29,10 @@ def test_photo_is_stored_and_tagged(conn, tmp_path):
     cv2.imwrite(str(photo), cv2.GaussianBlur(textured(0), (51, 51), 20))  # blurry on purpose
     fake = FakeTagger()
 
-    result = ingest.ingest_file(conn, photo, fake, frames_dir=tmp_path / "frames")
+    result = ingest.ingest_file(conn, photo, {CLIP: fake}, frames_dir=tmp_path / "frames")
 
     assert len(result.image_ids) == 1  # photos skip the blur filter
-    rows, total = store.gallery(conn, ingest.MODEL_ID)
+    rows, total = store.gallery(conn, CLIP)
     assert total == 1
     assert rows[0]["label"] == "rays" and rows[0]["trip"] == ingest.UPLOAD_TRIP
 
@@ -39,7 +40,7 @@ def test_photo_is_stored_and_tagged(conn, tmp_path):
 def test_video_frames_are_extracted_and_tagged(conn, tmp_path):
     video = tmp_path / "dive.mp4"
     write_video(video, seconds=5)
-    result = ingest.ingest_file(conn, video, FakeTagger(), frames_dir=tmp_path / "frames")
+    result = ingest.ingest_file(conn, video, {CLIP: FakeTagger()}, frames_dir=tmp_path / "frames")
     assert len(result.image_ids) == 3  # t = 0, 2, 4
     t = [r["t_s"] for r in conn.execute("SELECT t_s FROM images ORDER BY id")]
     assert [round(x) for x in t] == [0, 2, 4]
@@ -49,8 +50,8 @@ def test_same_file_twice_is_not_reprocessed(conn, tmp_path):
     photo = tmp_path / "IMG_1.jpg"
     cv2.imwrite(str(photo), textured(0))
     fake = FakeTagger()
-    first = ingest.ingest_file(conn, photo, fake, frames_dir=tmp_path / "frames")
-    second = ingest.ingest_file(conn, photo, fake, frames_dir=tmp_path / "frames")
+    first = ingest.ingest_file(conn, photo, {CLIP: fake}, frames_dir=tmp_path / "frames")
+    second = ingest.ingest_file(conn, photo, {CLIP: fake}, frames_dir=tmp_path / "frames")
     assert first.image_ids == second.image_ids
     assert first.new and not second.new
     assert fake.calls == 1
@@ -60,7 +61,7 @@ def test_rejects_unsupported_files(conn, tmp_path):
     doc = tmp_path / "notes.txt"
     doc.write_text("not media")
     with pytest.raises(ValueError):
-        ingest.ingest_file(conn, doc, FakeTagger(), frames_dir=tmp_path / "frames")
+        ingest.ingest_file(conn, doc, {CLIP: FakeTagger()}, frames_dir=tmp_path / "frames")
 
 
 def test_save_upload_keeps_same_named_files_apart(tmp_path):
@@ -73,7 +74,7 @@ def test_save_upload_keeps_same_named_files_apart(tmp_path):
 def upload_photo(conn, tmp_path, name, seed) -> ingest.IngestResult:
     path = tmp_path / name
     cv2.imwrite(str(path), textured(seed))
-    return ingest.ingest_file(conn, path, FakeTagger(), frames_dir=tmp_path / "frames")
+    return ingest.ingest_file(conn, path, {CLIP: FakeTagger()}, frames_dir=tmp_path / "frames")
 
 
 def test_remove_upload_deletes_rows_and_files(conn, tmp_path):
@@ -88,7 +89,7 @@ def test_remove_upload_deletes_rows_and_files(conn, tmp_path):
 
     assert not (tmp_path / "gone.jpg").exists() and not tmp_path.joinpath(frame).exists()
     assert (tmp_path / "keep.jpg").exists()
-    assert [r["image_id"] for r in store.gallery(conn, ingest.MODEL_ID)[0]] == keep.image_ids
+    assert [r["image_id"] for r in store.gallery(conn, CLIP)[0]] == keep.image_ids
     # Re-uploading the removed file processes it again instead of finding stale rows.
     assert upload_photo(conn, tmp_path, "gone.jpg", 1).image_ids
 
@@ -115,7 +116,23 @@ def test_duplicate_upload_under_new_name_leaves_no_extra_file(conn, tmp_path):
     uploads, frames_dir = tmp_path / "uploads", tmp_path / "frames"
     ok, data = cv2.imencode(".jpg", textured(0))
     kwargs = dict(upload_dir=uploads, frames_dir=frames_dir)
-    first = ingest.ingest_upload(conn, "a.jpg", data.tobytes(), FakeTagger(), **kwargs)
-    second = ingest.ingest_upload(conn, "a-copy.jpg", data.tobytes(), FakeTagger(), **kwargs)
+    first = ingest.ingest_upload(conn, "a.jpg", data.tobytes(), {CLIP: FakeTagger()}, **kwargs)
+    second = ingest.ingest_upload(
+        conn, "a-copy.jpg", data.tobytes(), {CLIP: FakeTagger()}, **kwargs
+    )
     assert not second.new and second.image_ids == first.image_ids
     assert [p.name.split("_", 1)[1] for p in uploads.iterdir()] == ["a.jpg"]
+
+
+def test_uploads_are_tagged_by_every_model(conn, tmp_path):
+    class FishTagger:
+        def predict_paths(self, paths):
+            return [{c: (0.8 if c == "fish" else 0.04) for c in CATEGORIES} for _ in paths]
+
+    photo = tmp_path / "IMG_0001.jpg"
+    cv2.imwrite(str(photo), textured(0))
+    taggers = {CLIP: FakeTagger(), "v2_both_s0": FishTagger()}
+    [image_id] = ingest.ingest_file(conn, photo, taggers, frames_dir=tmp_path / "frames").image_ids
+    answers = store.predictions_for(conn, image_id)
+    assert answers[CLIP]["label"] == "rays" and answers["v2_both_s0"]["label"] == "fish"
+    assert set(answers["v2_both_s0"]["scores"]) == set(CATEGORIES)

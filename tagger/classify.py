@@ -20,6 +20,17 @@ from PIL import Image
 
 from tagger import CATEGORIES
 
+# The model the app uses: v2, chosen on validation and the dev half, then scored once on the
+# holdout (README). Weights aren't committed; train it with training/train.py.
+ACTIVE_MODEL_ID = "v2_both_s0"
+ACTIVE_CHECKPOINT = Path("models") / f"{ACTIVE_MODEL_ID}.pt"
+
+
+def active_checkpoint(path: Path = ACTIVE_CHECKPOINT) -> Path | None:
+    """The app model's weights, or None if they aren't on this machine (the app then falls
+    back to the CLIP baseline)."""
+    return path if path.exists() else None
+
 
 def model_id_for(checkpoint: Path | str) -> str:
     """Prediction-table name for a checkpoint, e.g. models/convnext_tiny_depth_s0.pt ->

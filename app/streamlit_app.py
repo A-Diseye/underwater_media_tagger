@@ -13,8 +13,9 @@ import labeling_page
 import pandas as pd
 import streamlit as st
 
-from tagger import CATEGORIES, ingest, store
-from tagger.baseline import MODEL_ID, ClipBaseline
+from tagger import CATEGORIES, classify, ingest, store
+from tagger.baseline import MODEL_ID as CLIP_MODEL_ID
+from tagger.baseline import ClipBaseline
 
 UPLOAD_TYPES = ["jpg", "jpeg", "png", "heic", "heif", "mp4", "mov"]
 GRID_COLUMNS = 6
@@ -28,6 +29,28 @@ def get_clip() -> ClipBaseline:
     return ClipBaseline()
 
 
+@st.cache_resource
+def get_classifier() -> classify.Classifier:
+    return classify.Classifier(classify.ACTIVE_CHECKPOINT)
+
+
+def models() -> dict[str, str]:
+    """Display name -> model id, the app's model first. CLIP only if v2's weights are missing."""
+    found = {}
+    if classify.active_checkpoint():
+        found["v2 (fine-tuned)"] = classify.ACTIVE_MODEL_ID
+    found["CLIP baseline"] = CLIP_MODEL_ID
+    return found
+
+
+def upload_taggers() -> dict:
+    """Every available model tags uploads, so they can be compared like the library."""
+    taggers = {CLIP_MODEL_ID: get_clip()}
+    if classify.active_checkpoint():
+        taggers[classify.ACTIVE_MODEL_ID] = get_classifier()
+    return taggers
+
+
 def timestamp(t_s: float | None) -> str:
     return "" if t_s is None else f" @ {int(t_s // 60)}:{int(t_s % 60):02d}"
 
@@ -36,11 +59,18 @@ def timestamp(t_s: float | None) -> str:
 def show_details(row: dict) -> None:
     st.image(row["file_path"], width="stretch")
     st.caption(f"{Path(row['source']).name}{timestamp(row['t_s'])} · trip: {row['trip']}")
-    st.markdown(f"**CLIP baseline:** {row['label']} ({row['confidence']:.2f})")
-    scores = pd.DataFrame(
-        {"category": list(row["scores"]), "probability": list(row["scores"].values())}
-    ).sort_values("probability", ascending=False)
-    st.bar_chart(scores, x="category", y="probability", horizontal=True, sort="-probability")
+    # Every model side by side: where they disagree is the interesting part.
+    answers = store.predictions_for(store.connect(), row["image_id"])
+    shown = [(name, m) for name, m in models().items() if m in answers]
+    for col, (name, model_id) in zip(st.columns(len(shown)), shown, strict=True):
+        answer = answers[model_id]
+        col.markdown(f"**{name}:** {answer['label']} ({answer['confidence']:.2f})")
+        scores = pd.DataFrame(
+            {"category": list(answer["scores"]), "probability": list(answer["scores"].values())}
+        )
+        col.bar_chart(
+            scores, x="category", y="probability", horizontal=True, sort="-probability", height=220
+        )
     if row["trip"] == ingest.UPLOAD_TRIP and st.button("Remove this upload", type="primary"):
         remove_upload(row["media_id"])
         st.rerun()  # closes the dialog and redraws the page without the removed upload
@@ -73,8 +103,16 @@ def image_grid(rows: list[dict]) -> None:
 
 def gallery_page(conn) -> None:
     st.title("Gallery")
+    available = models()
+    if classify.ACTIVE_MODEL_ID not in available.values():
+        st.info(
+            f"Fine-tuned model weights not found at `{classify.ACTIVE_CHECKPOINT}`, so labels "
+            "come from the CLIP baseline. Train v2 with `training/train.py` to use it here."
+        )
     with st.sidebar:
         st.header("Filters")
+        model_label = st.radio("Model", list(available), help="Whose guesses the grid shows.")
+        model_id = available[model_label]
         labels = st.multiselect("Predicted category", CATEGORIES)
         trips = st.multiselect("Trip", store.trips(conn))
         min_conf = st.slider("Minimum confidence", 0.0, 1.0, 0.0, 0.05)
@@ -82,20 +120,20 @@ def gallery_page(conn) -> None:
         page_size = st.select_slider("Images per page", [24, 48, 96], value=48)
 
     filters = dict(labels=labels, trips=trips, min_confidence=min_conf, order=order)
-    _, total = store.gallery(conn, MODEL_ID, limit=0, **filters)
+    _, total = store.gallery(conn, model_id, limit=0, **filters)
     pages = max(1, -(-total // page_size))  # ceiling division
 
     # Back to page 1 whenever the filters or page size change.
-    view = repr((filters, page_size))
+    view = repr((model_id, filters, page_size))
     if st.session_state.get("gallery_view") != view:
         st.session_state.gallery_view = view
         _set_page(1, pages)
 
-    st.caption(f"{total:,} images match · labels are CLIP baseline guesses, not ground truth")
+    st.caption(f"{total:,} images match · labels are {model_label} guesses, not ground truth")
     pager(pages, "top")
     page = st.session_state.page
     rows, _ = store.gallery(
-        conn, MODEL_ID, limit=page_size, offset=(page - 1) * page_size, **filters
+        conn, model_id, limit=page_size, offset=(page - 1) * page_size, **filters
     )
     image_grid(rows)
     pager(pages, "bottom")
@@ -149,14 +187,15 @@ def upload_page(conn) -> None:
     st.write("Add photos or videos. Videos are split into frames every 2 seconds, then tagged.")
     files = st.file_uploader("Photos or videos", type=UPLOAD_TYPES, accept_multiple_files=True)
     if files and st.button("Tag uploads", type="primary"):
-        clip = get_clip()
+        with st.spinner("Loading models (first upload only)..."):
+            taggers = upload_taggers()
         results = []
         for f in files:
             # One bad file shouldn't stop (or hide) the rest of the batch.
             result = {"name": f.name, "media_id": None, "image_ids": [], "note": "", "error": ""}
             try:
                 with st.spinner(f"Processing {f.name}..."):
-                    r = ingest.ingest_upload(conn, f.name, f.getvalue(), clip)
+                    r = ingest.ingest_upload(conn, f.name, f.getvalue(), taggers)
                 result.update(media_id=r.media_id, image_ids=r.image_ids)
                 if not r.new:
                     result["note"] = "already uploaded earlier, not reprocessed"
@@ -190,7 +229,7 @@ def upload_page(conn) -> None:
         try:
             rows, _ = store.gallery(
                 conn,
-                MODEL_ID,
+                next(iter(models().values())),  # the app's model
                 image_ids=result["image_ids"],
                 order="as filmed",
                 limit=len(result["image_ids"]),
