@@ -8,7 +8,8 @@ Run with:  uv run streamlit run app/streamlit_app.py
 
 from pathlib import Path
 
-import labeling_page  # app/labeling_page.py (Streamlit adds this folder to the import path)
+import filter_check_page  # app/ pages (Streamlit adds this folder to the import path)
+import labeling_page
 import pandas as pd
 import streamlit as st
 
@@ -211,10 +212,12 @@ def upload_page(conn) -> None:
 
 
 conn = store.connect()
-page = st.sidebar.radio("Page", ["Gallery", "Upload", "Label"])
+page = st.sidebar.radio("Page", ["Gallery", "Upload", "Label", "Filter check"])
 if page == "Gallery":
     gallery_page(conn)
 elif page == "Upload":
     upload_page(conn)
-else:
+elif page == "Label":
     labeling_page.render(conn)
+else:
+    filter_check_page.render()
