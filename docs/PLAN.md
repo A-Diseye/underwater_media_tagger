@@ -29,7 +29,7 @@ Goal: an interview-ready local demo by **Nov 23, 2026**.
 - [x] Error analysis on the dev half only
 - [x] v2 training data: ~200 wide-framing photos (agent `--wide`), plus zoom-out augmentation
 - [x] Retrain, choose v2 on validation + dev; score once on the holdout half: v2 69% vs. CLIP 56% balanced accuracy (`docs/results/holdout-v2`)
-- [ ] `tagger/classify.py` wired into uploads; Streamlit: filter/search by tag, manual tag correction
+- [x] `tagger/classify.py` wired into uploads; Streamlit: v2 labels with a CLIP switch, filter/search by tag, manual tag correction
 - [ ] Search agent: `tagger/search.py` tools + agent loop, Streamlit chat page (MCP server if time)
 
 ### Week 4 — Ship (Nov 19 – Nov 23)

@@ -244,6 +244,20 @@ Full tables, confusion matrices, and failures: [docs/results/holdout-v2](docs/re
   the frames a model disagrees with would bias the answer key toward that model; any labeling
   noise affects CLIP, v1, and v2 equally.
 
+**Known failure modes, seen while using the app.** Browsing the library with v2's tags, two
+kinds of mistakes stand out. These are observations, not measurements:
+
+- **Close-up divers.** GoPro footage is full of masks and faces right at the lens, but the
+  Wikimedia Commons diver photos v2 trained on mostly show whole divers from a distance.
+- **Low light.** Dark, murky moments (deeper water, overhangs, dusk) are common in my footage,
+  while the training photos are mostly well-lit internet shots. The depth-fade augmentation
+  changes color, not brightness or noise.
+
+Both have plausible fixes (close-up diver photos in training, a low-light augmentation), but the
+holdout has already been used to score v2, so a v3 would need a fresh, untouched test set to be
+measured honestly. Mistakes can be fixed by hand in the app instead: a manual correction
+replaces the shown tag (and what search finds) without touching the model or my test labels.
+
 ## Findings so far
 
 ### Zero-shot CLIP mistakes a camouflaged lizardfish for a ray
