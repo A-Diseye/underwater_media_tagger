@@ -11,7 +11,13 @@ animal as the main subject. Three sources, taken in turn:
    with a tiny fish). Labeling rule 3 calls those scenery. Haiku already judged them, so they
    cost nothing to check again.
 
-Run with:  uv run python -m training.collect_scenery   (needs ANTHROPIC_API_KEY in .env)
+--temperate (v3) adds photos from temperate and Atlantic dive sites only: rocky reef, boulders,
+kelp, and wrecks. The first run's scenery was mostly tropical coral, so v2 had never seen a mossy
+Azores boulder as scenery and called many of them turtles. The target counts every scenery photo
+already kept, so `--temperate --target 300` adds about 200.
+
+Run with:  uv run python -m training.collect_scenery [--temperate --target 300]
+(needs ANTHROPIC_API_KEY in .env)
 """
 
 from __future__ import annotations
@@ -49,6 +55,34 @@ COMMONS_SUBCATS = (
 )
 COMMONS_BY_COUNTRY = "Underwater photographs by country"
 COMMONS_EXTRAS = ("Coral reefs",)
+TEMPERATE_GROUP = "Commons temperate scenes"
+# Atlantic and Mediterranean sites, closest to the Azores. Diver subcategories left out: a diver
+# as the subject isn't scenery.
+TEMPERATE_CATS = (
+    "Underwater photographs in Portugal",
+    "Underwater photographs in Spain",
+    "Underwater photographs in Andalusia",
+    "Underwater photographs in the Region of Murcia",
+    "Underwater photographs in the Land of Valencia",
+    "Underwater photographs in Croatia",
+    "Underwater photos of Adriatic sea",
+    "Underwater photographs in Cyprus",
+    "Underwater photographs in France",
+    "Underwater photographs in Italy",
+    "Underwater photographs in Liguria",
+    "Underwater photographs in Catania",
+    "Underwater photographs in Malta",
+    "Underwater photographs of nature of Malta",
+    "Underwater photographs in the Cyclades",
+    "Underwater photographs in the Dodecanese",
+    "Underwater photographs in the United Kingdom",
+    "Underwater photographs in Sweden",
+    "Underwater photographs in Cape Verde",
+    "Underwater photographs of kelp forests",
+    "Rocky reefs",
+    "Underwater photographs of man-made objects",
+)
+TEMPERATE_TARGET = 300
 # iNaturalist taxon ids: sponges, stony corals, octocorals.
 CLOSEUP_TAXA = (48824, 47532, 340493)
 
@@ -109,13 +143,24 @@ def reused_rejects(agent_log: Path, inat) -> list[Candidate]:
 
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--target", type=int, default=TARGET)
+    parser.add_argument(
+        "--target", type=int, help=f"default {TARGET}, {TEMPERATE_TARGET} temperate"
+    )
+    parser.add_argument("--temperate", action="store_true", help="temperate sites only (v3)")
     parser.add_argument("--budget", type=float, default=BUDGET_USD, help="Hard stop, in dollars.")
     parser.add_argument("--data-dir", type=Path, default=Path("data"))
     args = parser.parse_args(argv)
 
     load_dotenv()  # loaded here only, so the key never reaches the shell that runs Claude Code
     commons, inat = Commons(), INat()
+    if args.temperate:
+        target = args.target or TEMPERATE_TARGET
+        candidates = commons_candidates(commons, list(TEMPERATE_CATS), TEMPERATE_GROUP, seed=1)
+        summary = collect(
+            anthropic.Anthropic(), candidates, "scenery", args.data_dir, target, args.budget
+        )
+        print(json.dumps(summary, indent=2))
+        return
     reused = reused_rejects(args.data_dir / "curation" / "log.jsonl", inat)
     print(f"{len(reused)} reusable photos from the animal agent's log", flush=True)
     candidates = interleave(
@@ -130,7 +175,7 @@ def main(argv: list[str] | None = None) -> None:
         candidates,
         "scenery",
         args.data_dir,
-        args.target,
+        args.target or TARGET,
         args.budget,
         group_shares={CLOSEUP_GROUP: CLOSEUP_SHARE, REUSED_GROUP: REUSED_SHARE},
     )

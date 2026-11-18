@@ -47,6 +47,8 @@ def test_metrics_balanced_accuracy_weighs_categories_equally():
     assert m["balanced_accuracy"] == pytest.approx(0.5)  # scenery 100%, turtles 0%
     assert m["per_class"]["turtles"] == {"n": 1, "recall": 0.0, "precision": None}
     assert m["per_class"]["fish"]["recall"] is None  # no fish: not part of the average
+    # F1: scenery 2·9 / (9 + 10) = 0.947, turtles 0, so the average is 0.474.
+    assert m["macro_f1"] == pytest.approx((18 / 19) / 2)
 
 
 def test_unusable_is_excluded_and_models_share_frames(conn):
@@ -69,6 +71,7 @@ def test_evaluate_writes_report_matrices_and_failures(conn, tmp_path):
     report = (out / "results.md").read_text()
     assert "fine-tuned (chosen)" in report and "zero-shot CLIP baseline" in report
     assert "| rays | 2 |" in report
+    assert "Macro-F1" in report and "## Precision per category" in report
     for model in (CLIP, FT):
         assert (out / f"confusion_{model}.png").exists()
     assert (out / "failures.jpg").exists()

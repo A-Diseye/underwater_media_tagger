@@ -18,9 +18,20 @@ Zoom-out (v2): my footage usually shows animals small inside a wide scene, while
 photos are close-ups. With --zoom-out P, an animal photo is sometimes shrunk and pasted, with a
 soft edge, into a random training scenery photo, keeping its label.
 
-The best epoch is picked by balanced accuracy (average of per-category accuracy) on validation
-only: data/val, averaged with data/val_wide (wide-framing internet photos) when it exists. The
-test set is never read here.
+Balanced sampling (v3, --balanced): every batch draws each category equally often, however
+many photos it has, so the model doesn't learn "turtle" as a more common answer than "scenery"
+(v2 trained on 127 turtles to 68 scenery photos, and over-tagged turtles). The category mix the
+model effectively saw is saved in the checkpoint as `train_prior`, for tagger/prior.py.
+
+Mixup/CutMix (v3 sweep, --mixup): each training batch blends pairs of photos, either faded
+together (Mixup) or with a patch of one pasted into the other (CutMix), and blends their labels
+in the same proportion. The model can't bet everything on one cue, like "round and textured
+means turtle", because that cue now often comes with a partly different answer.
+
+The best epoch is picked on validation only: data/val, averaged with data/val_wide
+(wide-framing internet photos) when it exists. v1 and v2 used balanced accuracy (average
+per-category recall); v3 uses macro-F1 (--select f1), which also counts false alarms, so a
+model can't score well by over-tagging one category. The test set is never read here.
 
 Run with:  uv run python -m training.train [--cast depth|boost|none] [--seed N] [--run-name NAME]
 """
@@ -40,8 +51,10 @@ import numpy as np
 import timm
 import torch
 from PIL import Image, ImageDraw, ImageFilter
+from timm.data import Mixup
+from timm.loss import SoftTargetCrossEntropy
 from torch import nn
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, WeightedRandomSampler
 from torchvision import datasets, transforms
 
 from tagger import CATEGORIES
@@ -69,6 +82,9 @@ class Config:
     workers: int = 4
     zoom_out: float = 0.0  # chance an animal training photo is pasted small into a scenery photo
     wide_photos: bool = True  # include the wide-framing training photos (data/curation/wide_log)
+    balanced: bool = False  # draw every category equally often in each epoch
+    select: str = "balanced_accuracy"  # or "macro_f1": the validation score that picks the epoch
+    mixup: bool = False  # blend pairs of training photos and their labels (Mixup/CutMix)
 
 
 class DepthCast:
@@ -238,9 +254,10 @@ def seed_everything(seed: int) -> None:
 
 
 def evaluate(model, loader, device, criterion) -> dict:
-    """Loss, accuracy, balanced accuracy, and accuracy per category."""
+    """Loss, accuracy, balanced accuracy, macro-F1, and accuracy per category."""
     model.eval()
     correct, total = torch.zeros(len(CATEGORIES)), torch.zeros(len(CATEGORIES))
+    predicted = torch.zeros(len(CATEGORIES))
     loss_sum, n = 0.0, 0
     with torch.no_grad(), torch.autocast(device, enabled=device == "cuda"):
         for images, targets in loader:
@@ -248,17 +265,27 @@ def evaluate(model, loader, device, criterion) -> dict:
             logits = model(images)
             loss_sum += criterion(logits.float(), targets).item() * len(targets)
             n += len(targets)
-            hits = (logits.argmax(1) == targets).cpu()
+            guesses = logits.argmax(1).cpu()
+            hits = guesses == targets.cpu()
+            predicted += torch.bincount(guesses, minlength=len(CATEGORIES))
             for c in range(len(CATEGORIES)):
                 mask = targets.cpu() == c
                 correct[c] += hits[mask].sum()
                 total[c] += mask.sum()
     per_class = (correct / total.clamp(min=1)).tolist()
     present = [acc for acc, t in zip(per_class, total.tolist(), strict=True) if t > 0]
+    # F1 per category = 2·TP / (true count + tagged count): the harmonic mean of precision and
+    # recall. Averaged over the categories present (val_wide has animals only).
+    f1s = []
+    for c in range(len(CATEGORIES)):
+        if total[c] > 0:
+            tp = correct[c].item()
+            f1s.append(2 * tp / (total[c].item() + predicted[c].item()))
     return {
         "loss": loss_sum / max(n, 1),
         "accuracy": (correct.sum() / total.sum().clamp(min=1)).item(),
         "balanced_accuracy": sum(present) / max(len(present), 1),
+        "macro_f1": sum(f1s) / max(len(f1s), 1),
         "per_class": dict(zip(CATEGORIES, per_class, strict=True)),
     }
 
@@ -290,9 +317,19 @@ def train(cfg: Config) -> dict:
         "num_workers": cfg.workers,
         "pin_memory": device == "cuda",
     }
-    train_loader = DataLoader(
-        train_set, shuffle=True, generator=torch.Generator().manual_seed(cfg.seed), **loader_args
-    )
+    generator = torch.Generator().manual_seed(cfg.seed)
+    counts = torch.bincount(torch.tensor(train_set.targets), minlength=len(CATEGORIES)).float()
+    if cfg.balanced:
+        # Each photo's chance is 1 / (its category's count): every category totals the same.
+        weights = (1.0 / counts)[train_set.targets]
+        sampler = WeightedRandomSampler(weights, len(train_set), generator=generator)
+        train_loader = DataLoader(train_set, sampler=sampler, drop_last=cfg.mixup, **loader_args)
+        train_prior = torch.ones(len(CATEGORIES)) / len(CATEGORIES)
+    else:
+        train_loader = DataLoader(
+            train_set, shuffle=True, generator=generator, drop_last=cfg.mixup, **loader_args
+        )
+        train_prior = counts / counts.sum()
     val_loaders = {
         name: DataLoader(v, shuffle=False, **loader_args) for name, v in val_sets.items()
     }
@@ -301,6 +338,22 @@ def train(cfg: Config) -> dict:
 
     model.to(device)
     criterion = nn.CrossEntropyLoss(label_smoothing=cfg.label_smoothing)
+    # Mixup makes soft labels (e.g. 70% turtle, 30% scenery), so training needs a loss that takes
+    # them; label smoothing moves into the mixing step. Validation keeps the plain loss. Half the
+    # batches are mixed, so the model still sees plenty of clean photos. Batches must be even
+    # (pairs), hence drop_last above.
+    mixup = (
+        Mixup(
+            mixup_alpha=0.2,
+            cutmix_alpha=1.0,
+            prob=0.5,
+            label_smoothing=cfg.label_smoothing,
+            num_classes=len(CATEGORIES),
+        )
+        if cfg.mixup
+        else None
+    )
+    train_criterion = SoftTargetCrossEntropy() if mixup else criterion
     scaler = torch.amp.GradScaler(device, enabled=device == "cuda")
     head = list(model.get_classifier().parameters())
     head_ids = {id(p) for p in head}
@@ -329,8 +382,10 @@ def train(cfg: Config) -> dict:
             for images, targets in train_loader:
                 images, targets = images.to(device), targets.to(device)
                 optimizer.zero_grad(set_to_none=True)
+                if mixup:
+                    images, targets = mixup(images, targets)
                 with torch.autocast(device, enabled=device == "cuda"):
-                    loss = criterion(model(images).float(), targets)
+                    loss = train_criterion(model(images).float(), targets)
                 scaler.scale(loss).backward()
                 scaler.step(optimizer)
                 scaler.update()
@@ -343,7 +398,7 @@ def train(cfg: Config) -> dict:
             }
             val = scores["val"]
             # Pick epochs on every validation set equally: close-ups and wide shots.
-            selection = sum(v["balanced_accuracy"] for v in scores.values()) / len(scores)
+            selection = sum(v[cfg.select] for v in scores.values()) / len(scores)
             row = {
                 "epoch": epoch,
                 "stage": stage,
@@ -351,6 +406,7 @@ def train(cfg: Config) -> dict:
                 "val_loss": round(val["loss"], 4),
                 "val_accuracy": round(val["accuracy"], 4),
                 "val_balanced_accuracy": round(val["balanced_accuracy"], 4),
+                "val_macro_f1": round(val["macro_f1"], 4),
                 **{
                     f"{name}_balanced_accuracy": round(v["balanced_accuracy"], 4)
                     for name, v in scores.items()
@@ -376,6 +432,7 @@ def train(cfg: Config) -> dict:
                         "data_config": data_cfg,
                         "image_size": size,
                         "best": best,
+                        "train_prior": dict(zip(CATEGORIES, train_prior.tolist(), strict=True)),
                         "config": {k: str(v) for k, v in asdict(cfg).items()},
                         "git_commit": git_commit(),
                     },
@@ -397,6 +454,10 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--epochs-full", type=int, default=Config.epochs_full)
     parser.add_argument("--seed", type=int, default=Config.seed)
     parser.add_argument("--zoom-out", type=float, default=Config.zoom_out)
+    parser.add_argument("--balanced", action="store_true", help="Equal draws per category.")
+    parser.add_argument("--mixup", action="store_true", help="Mixup/CutMix training batches.")
+    parser.add_argument("--image-size", type=int, help="Input size in pixels (default 224).")
+    parser.add_argument("--select", choices=("balanced_accuracy", "macro_f1"), default="macro_f1")
     parser.add_argument(
         "--no-wide-photos", action="store_true", help="Train without the wide-framing photos."
     )
@@ -409,12 +470,16 @@ def main(argv: list[str] | None = None) -> None:
         seed=args.seed,
         zoom_out=args.zoom_out,
         wide_photos=not args.no_wide_photos,
+        balanced=args.balanced,
+        mixup=args.mixup,
+        image_size=args.image_size,
+        select=args.select,
     )
     result = train(cfg)
     best = result["best"]
     print(
         f"best epoch {best['epoch']}: balanced accuracy {best['balanced_accuracy']:.3f}, "
-        f"accuracy {best['accuracy']:.3f}"
+        f"macro-F1 {best['macro_f1']:.3f}, accuracy {best['accuracy']:.3f}"
     )
     print("per category:", {c: round(a, 3) for c, a in best["per_class"].items()})
     if best.get("val_wide"):

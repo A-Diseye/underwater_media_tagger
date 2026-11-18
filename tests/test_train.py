@@ -44,6 +44,53 @@ def test_tiny_run_saves_a_checkpoint_and_history(tmp_path):
     with open(tmp_path / "models" / "smoke_history.csv") as f:
         rows = list(csv.DictReader(f))
     assert [r["stage"] for r in rows] == ["head", "full"]
+    assert checkpoint["train_prior"]["turtles"] == pytest.approx(1 / len(CATEGORIES))
+
+
+def test_balanced_run_saves_a_uniform_prior(tmp_path):
+    make_split(tmp_path / "data" / "train", 2)
+    make_split(tmp_path / "data" / "val", 1)
+    for j in range(2, 6):  # four extra scenery photos: 6 of 16
+        Image.new("RGB", (40, 40), (200, j * 30, 100)).save(
+            tmp_path / "data" / "train" / "scenery" / f"{j}.jpg"
+        )
+    cfg = tr.Config(
+        run_name="balanced",
+        data_dir=tmp_path / "data",
+        models_dir=tmp_path / "models",
+        epochs_head=1,
+        epochs_full=0,
+        batch_size=4,
+        pretrained=False,
+        image_size=32,
+        device="cpu",
+        workers=0,
+        balanced=True,
+        select="macro_f1",
+    )
+    checkpoint = torch.load(tr.train(cfg)["checkpoint"], weights_only=False)
+    assert list(checkpoint["train_prior"].values()) == pytest.approx([1 / len(CATEGORIES)] * 6)
+    assert 0 <= checkpoint["best"]["macro_f1"] <= 1
+
+
+def test_mixup_run_trains_on_blended_batches(tmp_path):
+    make_split(tmp_path / "data" / "train", 3)
+    make_split(tmp_path / "data" / "val", 1)
+    cfg = tr.Config(
+        run_name="mixup",
+        data_dir=tmp_path / "data",
+        models_dir=tmp_path / "models",
+        epochs_head=1,
+        epochs_full=1,
+        batch_size=4,
+        pretrained=False,
+        image_size=32,
+        device="cpu",
+        workers=0,
+        mixup=True,
+    )
+    result = tr.train(cfg)
+    assert torch.load(result["checkpoint"], weights_only=False)["config"]["mixup"] == "True"
 
 
 def test_classes_follow_project_order_not_alphabetical(tmp_path):

@@ -6,6 +6,10 @@ same frames: those with a usable hand label and a prediction from every model.
 
 Headline: balanced accuracy (the average of per-category recall), so the hundreds of scenery
 frames can't hide a weak turtle score. Every number shows how many frames it rests on.
+Precision (how many of a category's tags were right) and macro-F1 (the average per-category
+balance of precision and recall) sit next to it since v3: in a library where turtles are rare,
+a model can find every turtle and still bury them under false turtle tags, and recall alone
+never shows that.
 
 Slices:
 - random-only: frames picked at random for labeling, the check that targeted picks didn't bias it
@@ -59,10 +63,17 @@ def metrics(rows: list[dict]) -> dict:
             "precision": hits / n_pred if n_pred else None,
         }
     recalls = [v["recall"] for v in per_class.values() if v["recall"] is not None]
+    # F1 = 2·TP / (true count + tagged count), over the categories present.
+    f1s = [
+        2 * confusion[c, c] / (v["n"] + sum(n for (_, p), n in confusion.items() if p == c))
+        for c, v in per_class.items()
+        if v["n"]
+    ]
     return {
         "n": len(rows),
         "accuracy": sum(r["true_label"] == r["predicted"] for r in rows) / len(rows) if rows else 0,
         "balanced_accuracy": sum(recalls) / len(recalls) if recalls else 0,
+        "macro_f1": sum(f1s) / len(f1s) if f1s else 0,
         "per_class": per_class,
         "confusion": confusion,
     }
@@ -136,6 +147,10 @@ def report(
         None: "all labeled frames",
         "dev": "the **dev** half (used for error analysis and choosing fixes)",
         "holdout": "the **holdout** half (locked until now, scored once)",
+        "holdout-second-look": (
+            "the **holdout** half, *second look* (already scored once for v2, so this number "
+            "is less clean than v2's was)"
+        ),
     }[half]
     lines = [
         f"# Test-set results: {scope}",
@@ -144,14 +159,14 @@ def report(
         "frames, the same frames for every model. Balanced accuracy is the average of "
         "per-category recall, so every category counts equally.",
         "",
-        "| Model | Role | Balanced accuracy | Accuracy |",
-        "| --- | --- | --- | --- |",
+        "| Model | Role | Balanced accuracy | Macro-F1 | Accuracy |",
+        "| --- | --- | --- | --- | --- |",
     ]
     for m in models:
         m_all = metrics(rows[m])
         lines.append(
             f"| `{m}` | {names[m]} | **{pct(m_all['balanced_accuracy'])}** | "
-            f"{pct(m_all['accuracy'])} |"
+            f"{pct(m_all['macro_f1'])} | {pct(m_all['accuracy'])} |"
         )
     lines += ["", "## Recall per category (frames it rests on)", ""]
     header = "| Category | n | " + " | ".join(f"`{m}`" for m in models) + " |"
@@ -162,6 +177,22 @@ def report(
         lines.append(
             f"| {c} | {n} | " + " | ".join(pct(per_model[m][c]["recall"]) for m in models) + " |"
         )
+    lines += [
+        "",
+        "## Precision per category (tags given)",
+        "",
+        "Of the frames each model tagged with a category, the share that truly were it. "
+        "Low precision on a rare category means its real frames are buried among false tags.",
+        "",
+        header.replace("| n |", "| true n |"),
+        "|" + " --- |" * (len(models) + 2),
+    ]
+    for c in CATEGORIES:
+        cells = []
+        for m in models:
+            tagged = sum(n for (_, p), n in metrics(rows[m])["confusion"].items() if p == c)
+            cells.append(f"{pct(per_model[m][c]['precision'])} ({tagged})")
+        lines.append(f"| {c} | {per_model[primary][c]['n']} | " + " | ".join(cells) + " |")
     lines += ["", "## Slices: balanced accuracy (frames)", ""]
     lines += [header.replace("Category | n", "Slice | n"), "|" + " --- |" * (len(models) + 2)]
     for name, subset in slices(rows[primary]).items():
@@ -187,8 +218,10 @@ def evaluate(
     out_dir: Path = OUT_DIR,
     half: str | None = None,
     split_path: Path = eval_split.SPLIT_PATH,
+    second_look: bool = False,
 ) -> dict:
-    """Score the models. `half` limits scoring to one half of the dev/holdout split."""
+    """Score the models. `half` limits scoring to one half of the dev/holdout split.
+    `second_look` marks a holdout report as a repeat look, so nobody reads it as untouched."""
     names = {CLIP_MODEL_ID: "zero-shot CLIP baseline", primary: "fine-tuned (chosen)"}
     names.update({a: "fine-tuned (comparison, didn't affect the choice)" for a in ablations})
     if half == "dev":  # nothing is chosen yet: dev is where candidates are compared
@@ -200,6 +233,8 @@ def evaluate(
             raise FileNotFoundError(f"no test split at {split_path}")
         rows = {m: [r for r in rs if r["source"] in split[half]] for m, rs in rows.items()}
     out_dir.mkdir(parents=True, exist_ok=True)
+    if second_look:
+        half = "holdout-second-look"
     for m in rows:
         confusion_image(metrics(rows[m]), f"{m} ({names[m]})", out_dir / f"confusion_{m}.png")
     n_wrong = failure_sheet(rows, primary, out_dir / "failures.jpg")
@@ -217,13 +252,27 @@ def main(argv: list[str] | None = None) -> None:
         action="store_true",
         help="Required to score the holdout half. Use once, when the model is final.",
     )
+    parser.add_argument(
+        "--second-look",
+        action="store_true",
+        help="The holdout was already scored for an earlier model: label the report as such.",
+    )
     parser.add_argument("--db", type=Path, default=store.DEFAULT_DB)
     parser.add_argument("--out", type=Path, help="Default: docs/results/<split>.")
     args = parser.parse_args(argv)
     if args.split == "holdout" and not args.final:
         parser.error("the holdout half is locked: pass --final, once, when the model is final")
+    if args.second_look and args.split != "holdout":
+        parser.error("--second-look only applies to the holdout half")
     out = args.out or Path("docs/results") / args.split
-    result = evaluate(store.connect(args.db), args.primary, args.ablation, out, half=args.split)
+    result = evaluate(
+        store.connect(args.db),
+        args.primary,
+        args.ablation,
+        out,
+        half=args.split,
+        second_look=args.second_look,
+    )
     print(f"{result['frames']} test frames ({args.split}); results in {out / 'results.md'}")
 
 
