@@ -227,6 +227,22 @@ subject. It pointed the right way but couldn't separate the variants well; the d
 
 Full tables, confusion matrices, and failures: [docs/results/holdout-v2](docs/results/holdout-v2/results.md).
 
+**Precision: the number this table was missing** (added Nov 17, same holdout frames). Recall asks
+"of the real turtles, how many did it find?" Precision asks "of the frames it *tagged* turtle, how
+many were turtles?" For a tagger you browse by tag, precision is what you feel:
+
+| Holdout precision (frames tagged) | CLIP | v1 | v2 |
+| --- | --- | --- | --- |
+| Turtles | 40% | 44% | 32% (22) |
+| Rays | 26% | 55% | 37% (43) |
+| Fish | 37% | 29% | 56% (27) |
+| Invertebrates | 43% | 8% | 21% (53) |
+| Diver | 95% | 82% | 86% |
+| Scenery | 74% | 80% | 86% |
+
+Two of every three frames v2 tagged "turtle" weren't turtles. Why that number is so much worse
+than recall suggests is the subject of v3.
+
 **What v2 fixed, and what it didn't:**
 
 - **v2 beats CLIP by 13 points** of balanced accuracy on frames that played no part in building
@@ -257,6 +273,175 @@ Both have plausible fixes (close-up diver photos in training, a low-light augmen
 holdout has already been used to score v2, so a v3 would need a fresh, untouched test set to be
 measured honestly. Mistakes can be fixed by hand in the app instead: a manual correction
 replaces the shown tag (and what search finds) without touching the model or my test labels.
+
+### v3: v2 saw turtles in the Azores, where there are none (Nov 17, 2026)
+
+**How it was found: by using the app, not by the metrics.** Browsing the Azores trip, v2 had
+tagged about 115 frames as turtles. I saw no turtles on that trip. A random sample of the tags
+showed mossy rounded boulders, overhangs, and wreck hulls. Its holdout balanced accuracy (69%)
+hadn't hinted at this.
+
+**Why a 69% model can still bury you in false turtles: base rates.** Turtles are a few dozen of
+my 12,000 frames; scenery is thousands. If the model mistakes even 1% of scenery frames for
+turtles, that's more false turtles than real ones. Balanced accuracy averages *recall* per
+category, so it never sees this. Precision does. Two things made it worse:
+
+- **The training mix taught the wrong odds.** v2 trained on 127 turtle photos and only 68
+  scenery photos. A classifier's probabilities absorb its training mix, so it treated "turtle"
+  as a common answer.
+- **v2 had never seen temperate scenery.** Its scenery photos were mostly tropical coral. The
+  Azores are volcanic rock, boulders, and algae, which v2 had only ever seen behind animals.
+
+**What I changed:**
+
+1. **165 temperate scenery photos** (Portugal, Spain, the Mediterranean, the UK, Cape Verde,
+   kelp forests, rocky reefs, wrecks), through the same Haiku-checked scenery workflow, for
+   $0.08. I reviewed a contact sheet and removed 6: half-above-water shots, a lab specimen, and a
+   duplicate. Two shots of divers in front of a wreck moved to `diver`, matching how I had
+   labeled the same kind of scene in my own footage.
+2. **Balanced sampling:** every training batch draws each category equally often, whatever its
+   photo count.
+3. **Selection by macro-F1** (the per-category balance of precision and recall), not balanced
+   accuracy, so over-tagging one category costs a model. The evaluation report now shows
+   precision and macro-F1 for every model.
+4. **Two checks from what I know about my footage**, with no labels involved: turtle tags in the
+   Azores and ray tags in Mexico. Neither trip had any, so both counts should be near zero.
+
+**What didn't work: correcting for base rates after training.** The textbook fix for "the
+training mix differs from the real one" is to re-weight the model's probabilities by Bayes'
+rule toward the real mix, which you can estimate from the model's own predictions on unlabeled
+data with an EM algorithm (Saerens et al., 2002). It needs no labels and no retraining
+([tagger/prior.py](tagger/prior.py)), and it passed its unit tests on synthetic data. On my
+library it collapsed:
+
+| Dev half (294 frames) | Balanced accuracy | Macro-F1 | Azores turtle tags |
+| --- | --- | --- | --- |
+| v2 | 75% | 64% | 115 |
+| v2 + EM correction, per trip | 30% | 26% | 0 |
+| v2 + EM correction, whole library | 30% | 26% | 0 |
+
+It removed the false turtles by removing *every* animal: the estimated mix for each trip came
+out about 60% diver and 40% scenery, and animal recall fell to 0%. The method assumes the only
+difference between training and real data is how common each category is ("label shift"). Here
+the images themselves differ too: sharp internet close-ups vs. murky GoPro frames. On frames
+it doesn't recognize, v2 leans toward diver and scenery; EM reads that as "this library is all
+divers and scenery" and amplifies it with each round. I kept the module and its tests as a
+record of the attempt, and fixed the problem in the training data instead.
+
+**First v3 results (dev half, 3 seeds per recipe, each recipe also averaged over its seeds):**
+
+| Dev half (294 frames) | Balanced accuracy | Macro-F1 | Azores turtles | Mexico rays |
+| --- | --- | --- | --- | --- |
+| CLIP | 65% | 63% | 16 | 190 |
+| v2 | **75%** | 64% | 115 | 168 |
+| v3 balanced, 3-seed average | 69% | **66%** | 31 | 80 |
+
+False animals fell by half to three quarters, and precision rose where dev has enough frames to
+judge (scenery recall 72% → 90%, ray precision 68% → 88%, diver precision 85% → 94%). Balanced
+accuracy fell, but that drop is one turtle frame (of 3 in dev) and two invertebrate frames (of
+9): rare categories make dev noisy.
+
+**Cleaning up the library on the way.** Checking per-trip counts turned up three Bahamas files
+recorded as Philippines (one clip had been misfiled on the drive when frames were extracted; GoPro
+file numbering gave it away), a snorkeling clip still in the library, and duplicate test
+uploads. Fixed and removed, so dev now scores 277 frames.
+
+**Tuning v3 further: a factorial sweep.** Three more training tweaks were candidates: a larger
+input size (320 px instead of 224, so small fish keep more pixels), more zoom-out (50% instead
+of 30%), and Mixup/CutMix (training on blends of two photos, which discourages overconfident
+answers). Two after-the-fact tweaks were also candidates: averaging with the mirror image, and
+smoothing each video frame with its neighbors. The smoothing idea is that a real turtle stays in
+view for several 2-second frames, while a shell-shaped boulder is often a one-frame blip
+([tagger/smooth.py](tagger/smooth.py)).
+
+Stacking tweaks one after another can't tell whether a tweak helps on its own or only alongside
+another. So [training/sweep.py](training/sweep.py) trains every combination (2 × 2 × 2 × 3 seeds
+= 24 runs). It estimates each tweak's effect as the average of 12 runs with it minus 12 without,
+plus how much each pair interacts. Everything is scored on validation, the dev half, and the two
+known-absent counts; the holdout isn't touched.
+
+| Tweak (with minus without) | Dev macro-F1 | Dev balanced acc. | Azores turtles | Mexico rays |
+| --- | --- | --- | --- | --- |
+| 320 px input | **+5.5** | +0.4 | **−30** | −10 |
+| 50% zoom-out | 0.0 | +0.4 | −5 | +12 |
+| Mixup | −0.2 | −0.4 | +11 | −8 |
+| Mirror-image averaging | +1.5 | +0.4 | −4 | −1 |
+| Smoothing ±2.5 s (1 neighbor each side) | **+4.1** | +0.2 | **−27** | **−24** |
+| Smoothing ±4.5 s (2 neighbors each side) | +3.6 | −1.5 | −36 | −30 |
+| *Seed-to-seed spread* | *±1.7* | *±2.8* | *±23* | *±19* |
+
+Testing the tweaks separately mattered twice, because of interactions:
+
+- **50% zoom-out looks harmless on average but costs 6.6 points of macro-F1 combined with
+  320 px.** Added after 320 px, it would have looked neutral and quietly cost those points.
+- **Mixup looks useless on average, but helps at 320 px.** At 224 px it adds false turtles; at
+  320 px it cuts false Mexico rays from 82 to 53 per model, consistently across seeds.
+
+The wider smoothing window removed more false animals but started erasing short real
+sightings (balanced accuracy −1.5), so v3 uses ±2.5 s.
+
+**v3 as chosen:** 320 px input, 30% zoom-out, Mixup, three seeds averaged, mirror-image
+averaging, and ±2.5 s smoothing on video frames ([tagger/classify.py](tagger/classify.py)). It
+now tags the whole library and uploads in the app. The sweep scored on 366 px pre-shrunk frames
+to save time; tagging full frames moved the numbers slightly (dev macro-F1 80.1% → 80.0%,
+Mexico rays 30 → 50, within seed noise). The full-frame numbers are the ones below.
+
+| Whole library (no labels needed) | v2 | v3 |
+| --- | --- | --- |
+| Turtle tags in the Azores (none there) | 115 | **13** |
+| Ray tags in Mexico (none there) | 168 | **50** |
+
+**Holdout, second look** ([docs/results/holdout-v3](docs/results/holdout-v3/results.md), 640
+frames):
+
+| Holdout | Balanced accuracy | Macro-F1 | Accuracy |
+| --- | --- | --- | --- |
+| CLIP | 56% | 53% | 74% |
+| v2 | **69%** | 55% | 74% |
+| v3 | 67% | **68%** | **81%** |
+
+| Precision (holdout) | CLIP | v2 | v3 |
+| --- | --- | --- | --- |
+| turtles | 40% | 32% | **67%** |
+| rays | 26% | 37% | **87%** |
+| fish | 37% | 56% | **77%** |
+| invertebrates | 43% | 21% | **60%** |
+
+v3 did what it was built for: when it names an animal, it's now right most of the time, and
+the false animals in the library fell by 70–90%. But **its balanced accuracy did not beat v2's
+on the holdout** (67% vs. 69%), even though it did on dev (77% vs. 75%). v3 is more cautious:
+ray recall fell from 84% to 68%, invertebrates from 79% to 64%, and fish from 27% to 18%. On
+dev, where every v3 choice was made, the trade looked free. On frames it wasn't tuned on, part
+of it came back. That gap is the cost of choosing among many candidates on 277 dev frames, and
+it's why the holdout exists.
+
+Which model is "better" depends on use. For browsing a library ("show me my rays"), precision
+matters more: a page of rays that are 87% rays beats one that is 37% rays. That's why the app
+runs v3.
+
+**v3's known weaknesses**
+
+- **Fish are mostly missed.** Fish recall is 18% on the holdout (36% on dev): small fish in
+  wide shots are still called scenery, as for every model including CLIP. When v3 does say fish,
+  it's right 77% of the time.
+- **Cautious on rare animals.** Recall for rays and invertebrates fell compared with v2 (see
+  above): the price of fewer false tags.
+- **Weakest on my GoPro footage and in the Azores.** GoPro-frame balanced accuracy is 55% (v2:
+  63%), against 82% on trip-mates' phone photos. The Azores slice is 51%. Murky temperate
+  water is the furthest from the internet training photos.
+- **Rounded rock still reads as turtle sometimes.** 13 false Azores turtles remain: mossy
+  boulders, overhangs, and wreck parts. Fixing this needs more temperate training photos;
+  Wikimedia Commons ran out under the per-photographer cap, and my own Azores footage can't be
+  used because it's test data.
+- **There's no `unusable` class.** Surface, boat, and fogged frames are excluded from scoring,
+  but in the gallery they're forced into one of the six categories. A seventh class is the real
+  fix, but it changes the evaluation design.
+- **Rare categories are measured on very few frames:** 3 turtles and 9 invertebrates in dev, 11
+  and 14 in the holdout. A single frame moves turtle recall by 9–33 points.
+- **The holdout is now spent twice.** It scored v2 once, and v3 as a labeled second look. v3's
+  fixes came partly from patterns I saw in the library, which includes holdout clips, so these
+  numbers are weaker evidence than v2's were. A next model needs newly labeled footage from a
+  new trip.
 
 ## Findings so far
 

@@ -31,6 +31,11 @@ Goal: an interview-ready local demo by **Nov 23, 2026**.
 - [x] Retrain, choose v2 on validation + dev; score once on the holdout half: v2 69% vs. CLIP 56% balanced accuracy (`docs/results/holdout-v2`)
 - [x] `tagger/classify.py` wired into uploads; Streamlit: v2 labels with a CLIP switch, filter/search by tag, manual tag correction
 - [ ] Search agent: `tagger/search.py` tools + agent loop, Streamlit chat page (MCP server if time)
+- [x] v3 data: 165 temperate scenery photos (`collect_scenery.py --temperate`); balanced sampling; macro-F1 selection; precision in every report
+- [x] Tried and rejected: EM base-rate correction (`tagger/prior.py`): dev balanced accuracy 75% → 30%
+- [x] Library cleanup: 3 misfiled Bahamas clips, snorkeling clip and duplicate uploads removed
+- [x] v3 factorial sweep (`training/sweep.py`: input size × zoom-out × Mixup, plus flip and frame smoothing); choose on validation + dev + Azores turtles / Mexico rays
+- [x] v3 in the app (3-seed ensemble, flip, ±2.5 s smoothing); holdout second look: v3 67% vs. v2 69% balanced accuracy, macro-F1 68% vs. 55%, animal precision roughly doubled (`docs/results/holdout-v3`)
 
 ### Week 4 — Ship (Nov 19 – Nov 23)
 - [ ] Run the full app end to end locally; fix bugs
