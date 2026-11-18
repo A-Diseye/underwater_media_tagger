@@ -20,7 +20,8 @@ UPLOAD_DIR = Path("data/uploads")
 
 class Tagger(Protocol):
     """Anything that scores image files, e.g. ClipBaseline or the fine-tuned Classifier.
-    Tests pass a fake."""
+    A tagger that also has predict_clip(paths, times) (the v3 Ensemble) gets a video's frames
+    through it, so they're smoothed over their neighbors. Tests pass a fake."""
 
     def predict_paths(self, paths: list[str]) -> list[dict[str, float]]: ...
 
@@ -90,8 +91,12 @@ def ingest_file(
 
     if image_ids:
         paths = [str(frames_dir / r.frame_path) for r in kept]
+        times = [r.t_s for r in kept]
         for model_id, tagger in taggers.items():
-            scores = tagger.predict_paths(paths)
+            if kind == "video" and hasattr(tagger, "predict_clip"):
+                scores = tagger.predict_clip(paths, times)
+            else:
+                scores = tagger.predict_paths(paths)
             with conn:
                 for image_id, s in zip(image_ids, scores, strict=True):
                     store.add_prediction(conn, image_id, model_id, s)

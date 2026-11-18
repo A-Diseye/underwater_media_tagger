@@ -8,7 +8,7 @@ torch = pytest.importorskip("torch")
 pytest.importorskip("timm")
 
 from tagger import CATEGORIES  # noqa: E402
-from tagger.classify import Classifier, model_id_for  # noqa: E402
+from tagger.classify import Classifier, Ensemble, model_id_for  # noqa: E402
 from training import train as tr  # noqa: E402
 
 
@@ -54,13 +54,42 @@ def test_preprocessing_matches_training_validation(checkpoint):
     assert torch.allclose(classifier.preprocess(img), val_tf(img))
 
 
-def test_app_falls_back_when_the_weights_are_missing(tmp_path):
-    from tagger.classify import active_checkpoint
+def test_app_falls_back_when_any_weights_are_missing(tmp_path):
+    from tagger.classify import active_checkpoints
 
-    assert active_checkpoint(tmp_path / "missing.pt") is None
-    weights = tmp_path / "v2.pt"
-    weights.write_bytes(b"")
-    assert active_checkpoint(weights) == weights
+    a, b = tmp_path / "s0.pt", tmp_path / "s1.pt"
+    a.write_bytes(b"")
+    assert active_checkpoints([a, b]) is None
+    b.write_bytes(b"")
+    assert active_checkpoints([a, b]) == (a, b)
+
+
+def _frames(tmp_path, n):
+    rng = np.random.default_rng(0)
+    paths = []
+    for i in range(n):
+        path = tmp_path / f"f{i}.jpg"
+        Image.fromarray(rng.integers(0, 255, (60, 80, 3), dtype=np.uint8)).save(path)
+        paths.append(path)
+    return paths
+
+
+def test_ensemble_of_one_without_flip_matches_the_classifier(checkpoint, tmp_path):
+    paths = _frames(tmp_path, 3)
+    single = Classifier(checkpoint, device="cpu").predict_paths(paths)
+    ensemble = Ensemble([checkpoint], device="cpu", flip=False).predict_paths(paths)
+    for s, e in zip(single, ensemble, strict=True):
+        assert list(e.values()) == pytest.approx(list(s.values()), abs=1e-5)
+
+
+def test_clip_frames_are_smoothed_and_photos_are_not(checkpoint, tmp_path):
+    paths = _frames(tmp_path, 3)
+    ens = Ensemble([checkpoint, checkpoint], device="cpu", window_s=2.5)
+    photos = ens.predict_paths(paths)
+    clip = ens.predict_clip(paths, [0.0, 2.0, 10.0])
+    mean01 = [(photos[0][c] + photos[1][c]) / 2 for c in CATEGORIES]
+    assert list(clip[0].values()) == pytest.approx(mean01, abs=1e-5)  # 0 s and 2 s are neighbors
+    assert list(clip[2].values()) == pytest.approx(list(photos[2].values()), abs=1e-5)  # alone
 
 
 def test_model_id_comes_from_the_file_name():

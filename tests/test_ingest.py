@@ -46,6 +46,34 @@ def test_video_frames_are_extracted_and_tagged(conn, tmp_path):
     assert [round(x) for x in t] == [0, 2, 4]
 
 
+class FakeClipTagger(FakeTagger):
+    """Like the v3 Ensemble: has predict_clip for video frames."""
+
+    def __init__(self):
+        super().__init__()
+        self.clip_times = None
+
+    def predict_clip(self, paths, times):
+        self.clip_times = list(times)
+        return self.predict_paths(paths)
+
+
+def test_video_frames_go_through_predict_clip_with_their_times(conn, tmp_path):
+    video = tmp_path / "dive.mp4"
+    write_video(video, seconds=5)
+    fake = FakeClipTagger()
+    ingest.ingest_file(conn, video, {"v3": fake}, frames_dir=tmp_path / "frames")
+    assert [round(t) for t in fake.clip_times] == [0, 2, 4]
+
+
+def test_photos_skip_predict_clip(conn, tmp_path):
+    photo = tmp_path / "IMG_1.jpg"
+    cv2.imwrite(str(photo), textured(0))
+    fake = FakeClipTagger()
+    ingest.ingest_file(conn, photo, {"v3": fake}, frames_dir=tmp_path / "frames")
+    assert fake.clip_times is None and fake.calls == 1
+
+
 def test_same_file_twice_is_not_reprocessed(conn, tmp_path):
     photo = tmp_path / "IMG_1.jpg"
     cv2.imwrite(str(photo), textured(0))

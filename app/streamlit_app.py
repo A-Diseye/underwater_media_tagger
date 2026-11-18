@@ -33,15 +33,15 @@ def get_clip() -> ClipBaseline:
 
 
 @st.cache_resource
-def get_classifier() -> classify.Classifier:
-    return classify.Classifier(classify.ACTIVE_CHECKPOINT)
+def get_classifier() -> classify.Ensemble:
+    return classify.Ensemble(classify.ACTIVE_CHECKPOINTS)
 
 
 def models() -> dict[str, str]:
-    """Display name -> model id, the app's model first. CLIP only if v2's weights are missing."""
+    """Display name -> model id, the app's model first. CLIP only if v3's weights are missing."""
     found = {}
-    if classify.active_checkpoint():
-        found["v2 (fine-tuned)"] = classify.ACTIVE_MODEL_ID
+    if classify.active_checkpoints():
+        found["v3 (fine-tuned)"] = classify.ACTIVE_MODEL_ID
     found["CLIP baseline"] = CLIP_MODEL_ID
     return found
 
@@ -49,7 +49,7 @@ def models() -> dict[str, str]:
 def upload_taggers() -> dict:
     """Every available model tags uploads, so they can be compared like the library."""
     taggers = {CLIP_MODEL_ID: get_clip()}
-    if classify.active_checkpoint():
+    if classify.active_checkpoints():
         taggers[classify.ACTIVE_MODEL_ID] = get_classifier()
     return taggers
 
@@ -141,8 +141,8 @@ def gallery_page(conn) -> None:
     available = models()
     if classify.ACTIVE_MODEL_ID not in available.values():
         st.info(
-            f"Fine-tuned model weights not found at `{classify.ACTIVE_CHECKPOINT}`, so labels "
-            "come from the CLIP baseline. Train v2 with `training/train.py` to use it here."
+            "Fine-tuned v3 weights not found in `models/`, so labels come from the CLIP "
+            "baseline. Train v3 with `training/sweep.py --steps train` to use it here."
         )
     with st.sidebar:
         st.header("Filters")
