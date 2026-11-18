@@ -30,7 +30,7 @@ Goal: an interview-ready local demo by **Nov 23, 2026**.
 - [x] v2 training data: ~200 wide-framing photos (agent `--wide`), plus zoom-out augmentation
 - [x] Retrain, choose v2 on validation + dev; score once on the holdout half: v2 69% vs. CLIP 56% balanced accuracy (`docs/results/holdout-v2`)
 - [x] `tagger/classify.py` wired into uploads; Streamlit: v2 labels with a CLIP switch, filter/search by tag, manual tag correction
-- [ ] Search agent: `tagger/search.py` tools + agent loop, Streamlit chat page (MCP server if time)
+- [x] Search agent: `tagger/search.py` tools + SDK tool runner, Streamlit chat page, CLIP "similar frames" (MCP server deferred)
 - [x] v3 data: 165 temperate scenery photos (`collect_scenery.py --temperate`); balanced sampling; macro-F1 selection; precision in every report
 - [x] Tried and rejected: EM base-rate correction (`tagger/prior.py`): dev balanced accuracy 75% → 30%
 - [x] Library cleanup: 3 misfiled Bahamas clips, snorkeling clip and duplicate uploads removed

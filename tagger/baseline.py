@@ -19,6 +19,7 @@ import argparse
 from collections.abc import Sequence
 from pathlib import Path
 
+import numpy as np
 from PIL import Image
 
 from tagger import CATEGORIES
@@ -100,13 +101,31 @@ class ClipBaseline:
                 category_vectors.append(mean / mean.norm())
             self.text_features = torch.stack(category_vectors)  # (7, 512)
 
-    def predict(self, images: Sequence[Image.Image]) -> list[dict[str, float]]:
-        """Return {category: probability} for each image."""
+    def embed(self, images: Sequence[Image.Image]):
+        """CLIP image embeddings: one unit-length vector (512 numbers) per image. Images that
+        look alike get vectors that point in similar directions (high dot product)."""
         torch = self.torch
         batch = torch.stack([self.preprocess(img.convert("RGB")) for img in images])
         with torch.no_grad():
             feats = self.model.encode_image(batch.to(self.device))
-            feats = feats / feats.norm(dim=-1, keepdim=True)
+            return feats / feats.norm(dim=-1, keepdim=True)
+
+    def embed_paths(self, paths: Sequence[Path | str], batch_size: int = 64):
+        """Embeddings for image files, as a float32 NumPy array (one row per path)."""
+        rows = []
+        for i in range(0, len(paths), batch_size):
+            images = []
+            for p in paths[i : i + batch_size]:
+                with Image.open(p) as img:
+                    images.append(img.convert("RGB"))
+            rows.append(self.embed(images).float().cpu().numpy())
+        return np.concatenate(rows) if rows else np.zeros((0, 0), dtype=np.float32)
+
+    def predict(self, images: Sequence[Image.Image]) -> list[dict[str, float]]:
+        """Return {category: probability} for each image."""
+        torch = self.torch
+        with torch.no_grad():
+            feats = self.embed(images)
             # CLIP's learned temperature (~100) sharpens cosine similarities before softmax.
             logits = self.model.logit_scale.exp() * feats @ self.text_features.T
             probs = logits.softmax(dim=-1).cpu().tolist()

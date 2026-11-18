@@ -38,14 +38,11 @@ from dotenv import load_dotenv
 from PIL import Image, UnidentifiedImageError
 from pydantic import BaseModel
 
-CHECK_MODEL = "claude-haiku-5-5"
-AGENT_MODEL = "claude-sonnet-5-5"
+from tagger.pricing import HAIKU, SONNET, cost_usd
+
+CHECK_MODEL = HAIKU
+AGENT_MODEL = SONNET
 FALLBACK_BETA = "server-side-fallback-2026-07-01"
-# Dollars per million tokens: (input, output, cache write, cache read).
-PRICES = {
-    CHECK_MODEL: (0.10, 0.50, 0.125, 0.01),
-    AGENT_MODEL: (2.00, 10.00, 2.50, 0.20),
-}
 
 ANIMAL_CATEGORIES = ("turtles", "rays", "fish", "invertebrates")
 TARGET = 100
@@ -244,17 +241,6 @@ def split_for(observer_id: int | str) -> str:
     """
     digest = hashlib.blake2b(str(observer_id).encode(), digest_size=8).digest()
     return "val" if int.from_bytes(digest) % VAL_EVERY == 0 else "train"
-
-
-def cost_usd(model: str, usage) -> float:
-    input_price, output_price, write_price, read_price = PRICES[model]
-    tokens = (
-        usage.input_tokens * input_price
-        + usage.output_tokens * output_price
-        + (getattr(usage, "cache_creation_input_tokens", 0) or 0) * write_price
-        + (getattr(usage, "cache_read_input_tokens", 0) or 0) * read_price
-    )
-    return tokens / 1_000_000
 
 
 def check_photo(

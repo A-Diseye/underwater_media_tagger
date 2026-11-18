@@ -11,9 +11,10 @@ from pathlib import Path
 import filter_check_page  # app/ pages (Streamlit adds this folder to the import path)
 import labeling_page
 import pandas as pd
+import search_page
 import streamlit as st
 
-from tagger import CATEGORIES, classify, ingest, store
+from tagger import CATEGORIES, classify, ingest, similar, store
 from tagger.baseline import MODEL_ID as CLIP_MODEL_ID
 from tagger.baseline import ClipBaseline
 
@@ -236,6 +237,8 @@ def upload_page(conn) -> None:
             try:
                 with st.spinner(f"Processing {f.name}..."):
                     r = ingest.ingest_upload(conn, f.name, f.getvalue(), taggers)
+                    if r.image_ids:  # so search can find similar frames to (and from) uploads
+                        similar.add(conn, get_clip(), r.image_ids)
                 result.update(media_id=r.media_id, image_ids=r.image_ids)
                 if not r.new:
                     result["note"] = "already uploaded earlier, not reprocessed"
@@ -291,9 +294,11 @@ def upload_page(conn) -> None:
 
 
 conn = store.connect()
-page = st.sidebar.radio("Page", ["Gallery", "Upload", "Label", "Filter check"])
+page = st.sidebar.radio("Page", ["Gallery", "Search", "Upload", "Label", "Filter check"])
 if page == "Gallery":
     gallery_page(conn)
+elif page == "Search":
+    search_page.render()
 elif page == "Upload":
     upload_page(conn)
 elif page == "Label":

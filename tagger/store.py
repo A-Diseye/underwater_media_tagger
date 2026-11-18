@@ -84,6 +84,14 @@ def connect(db_path: Path | str = DEFAULT_DB) -> sqlite3.Connection:
     return conn
 
 
+def connect_readonly(db_path: Path | str = DEFAULT_DB) -> sqlite3.Connection:
+    """Open the database read-only: any write raises sqlite3.OperationalError. For code that must
+    never change the library, like the search agent's tools."""
+    conn = sqlite3.connect(f"file:{Path(db_path).resolve()}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
 def add_media(
     conn: sqlite3.Connection, path: str, kind: str, fingerprint: str, trip: str | None = None
 ) -> int:
@@ -211,6 +219,37 @@ GALLERY_ORDERS = {
 }
 
 
+# The tag the app shows: my correction, else my `unusable` test label, else the model's guess.
+SHOWN_LABEL = "COALESCE(c.label, u.label, p.label)"
+
+
+def _gallery_from(
+    model: str,
+    labels: list[str] | None,
+    trips: list[str] | None,
+    image_ids: list[int] | None,
+    min_confidence: float,
+    max_confidence: float,
+) -> tuple[str, list]:
+    """FROM/WHERE (and params) shared by every gallery-style query, so they agree on tags."""
+    where = ["p.model = ?", "p.confidence >= ?", "p.confidence <= ?"]
+    params: list = [model, min_confidence, max_confidence]
+    for column, values in ((SHOWN_LABEL, labels), ("m.trip", trips), ("i.id", image_ids)):
+        if values:
+            where.append(f"{column} IN ({', '.join('?' * len(values))})")
+            params.extend(values)
+    sql = f"""
+        FROM images i
+        JOIN media m ON m.id = i.media_id
+        JOIN predictions p ON p.image_id = i.id
+        LEFT JOIN labels c ON c.image_id = i.id AND c.source = '{CORRECTION}'
+        LEFT JOIN labels u ON u.image_id = i.id AND u.source = 'test_labeling'
+                          AND u.label = '{UNUSABLE}'
+        WHERE {" AND ".join(where)}
+    """
+    return sql, params
+
+
 def gallery(
     conn: sqlite3.Connection,
     model: str,
@@ -221,6 +260,7 @@ def gallery(
     order: str = "most confident",
     limit: int = 48,
     offset: int = 0,
+    max_confidence: float = 1.0,
 ) -> tuple[list[dict], int]:
     """One page of images with `model`'s predictions, filtered. Returns (rows, total matches).
 
@@ -232,27 +272,12 @@ def gallery(
     trip, source (original file path), t_s, label, model_label, corrected, labeled_unusable,
     confidence, and scores (dict).
     """
-    where = ["p.model = ?", "p.confidence >= ?"]
-    params: list = [model, min_confidence]
-    shown_label = "COALESCE(c.label, u.label, p.label)"
-    for column, values in ((shown_label, labels), ("m.trip", trips), ("i.id", image_ids)):
-        if values:
-            where.append(f"{column} IN ({', '.join('?' * len(values))})")
-            params.extend(values)
-    base = f"""
-        FROM images i
-        JOIN media m ON m.id = i.media_id
-        JOIN predictions p ON p.image_id = i.id
-        LEFT JOIN labels c ON c.image_id = i.id AND c.source = '{CORRECTION}'
-        LEFT JOIN labels u ON u.image_id = i.id AND u.source = 'test_labeling'
-                          AND u.label = '{UNUSABLE}'
-        WHERE {" AND ".join(where)}
-    """
+    base, params = _gallery_from(model, labels, trips, image_ids, min_confidence, max_confidence)
     total = conn.execute(f"SELECT COUNT(*) {base}", params).fetchone()[0]
     rows = conn.execute(
         f"""
         SELECT i.id AS image_id, i.media_id, i.file_path, m.trip, m.path AS source, i.t_s,
-               {shown_label} AS label, p.label AS model_label, c.label IS NOT NULL AS corrected,
+               {SHOWN_LABEL} AS label, p.label AS model_label, c.label IS NOT NULL AS corrected,
                c.label IS NULL AND u.label IS NOT NULL AS labeled_unusable,
                p.confidence, p.scores
         {base}
@@ -270,6 +295,35 @@ def gallery(
         }
         for r in rows
     ], total
+
+
+COUNT_GROUPS = {
+    "category": SHOWN_LABEL,
+    "trip": "m.trip",
+    "clip": "m.path",
+}
+
+
+def count_by(
+    conn: sqlite3.Connection,
+    model: str,
+    group: str,
+    labels: list[str] | None = None,
+    trips: list[str] | None = None,
+    min_confidence: float = 0.0,
+    max_confidence: float = 1.0,
+) -> list[dict]:
+    """Image counts grouped by shown category, trip, or clip, largest first, with the same tags
+    and filters as the gallery. Each row has `group` and `images`."""
+    base, params = _gallery_from(model, labels, trips, None, min_confidence, max_confidence)
+    rows = conn.execute(
+        f"""
+        SELECT {COUNT_GROUPS[group]} AS grp, COUNT(*) AS images {base}
+        GROUP BY grp ORDER BY images DESC, grp
+        """,
+        params,
+    )
+    return [{"group": r["grp"], "images": r["images"]} for r in rows]
 
 
 def correction_for(conn: sqlite3.Connection, image_id: int) -> str | None:
