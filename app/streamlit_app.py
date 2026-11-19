@@ -8,7 +8,8 @@ Run with:  uv run streamlit run app/streamlit_app.py
 
 from pathlib import Path
 
-import filter_check_page  # app/ pages (Streamlit adds this folder to the import path)
+import color_check_page  # app/ pages (Streamlit adds this folder to the import path)
+import filter_check_page
 import labeling_page
 import pandas as pd
 import search_page
@@ -294,7 +295,8 @@ def upload_page(conn) -> None:
 
 
 conn = store.connect()
-page = st.sidebar.radio("Page", ["Gallery", "Search", "Upload", "Label", "Filter check"])
+PAGES = ["Gallery", "Search", "Upload", "Label", "Filter check", "Color check"]
+page = st.sidebar.radio("Page", PAGES)
 if page == "Gallery":
     gallery_page(conn)
 elif page == "Search":
@@ -303,5 +305,7 @@ elif page == "Upload":
     upload_page(conn)
 elif page == "Label":
     labeling_page.render(conn)
-else:
+elif page == "Filter check":
     filter_check_page.render()
+else:
+    color_check_page.render()

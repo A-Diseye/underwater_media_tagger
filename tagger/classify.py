@@ -66,7 +66,7 @@ class Classifier:
         self.model.load_state_dict(saved["state_dict"])
         self.model.to(self.device).eval()  # inference mode: no dropout, fixed normalization
         cfg, size = saved["data_config"], saved["image_size"]
-        self.image_size = size
+        self.image_size, self.data_config = size, cfg  # tagger/locate.py crops the same way
         # The same steps as validation in training/train.py: resize, center crop, normalize.
         self.preprocess = transforms.Compose(
             [
