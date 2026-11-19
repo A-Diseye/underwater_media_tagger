@@ -2,7 +2,7 @@
 
 A local app where divers upload underwater photos or dive videos. A computer vision model tags each image with one of 6 subject categories, and color correction is tuned to the subject's location. Portfolio project, interview-ready demo due **Nov 23, 2026**. Runs locally only; no public deployment.
 
-Timeline, task list, and README notes: `docs/PLAN.md` (read it when planning or picking the next task). Topic rules in `.claude/rules/` load automatically when you touch the matching files.
+Timeline, task list, and README notes: `docs/PLAN.md` (read it when planning or picking the next task). Color correction design: `docs/color_plan.md`. Topic rules in `.claude/rules/` load automatically when you touch the matching files.
 
 ## About me and how to work with me
 
@@ -56,8 +56,8 @@ Stack: Python 3.12, uv, ruff (line length 100), pytest, PyTorch + `timm`, open-c
 - **Model:** fine-tune pretrained ConvNeXt-Tiny (`timm`); Grad-CAM works well on CNNs and color correction depends on it. Stretch: CLIP + linear probe.
 - **Baseline:** zero-shot CLIP with text prompts per category.
 - **Training data:** internet images only. Animals: iNaturalist, mapped to categories by taxonomy and gathered by a curation agent. Divers: Wikimedia Commons. Scenery: Commons underwater scenes, iNaturalist corals and sponges, and agent rejects with no main animal. Divers and scenery use fixed workflows, not agents (`training/workflow.py`).
-- **Agents:** a training-data curation agent and a read-only library search agent (details in `.claude/rules/agents.md`).
-- **Order:** classification is the priority until Nov 23. Subject-aware color correction (located by Grad-CAM, no bounding boxes) is a secondary, free-time project.
+- **Agents:** a training-data curation agent, a read-only library search agent, and two color-correction checks (Haiku Grad-CAM hit check, Sonnet second judge for the blind test). Details in `.claude/rules/agents.md`.
+- **Order:** classification is done (v3, Nov 18). Until Nov 23 the focus is subject-aware color correction: located by Grad-CAM, no bounding boxes, plan in `docs/color_plan.md`. The end-to-end run, README polish, and demo video are my own free-time tasks.
 - **Test set split for v2:** v1 results came from all labeled frames. For v2, labeled frames are split by clip into a dev half (error analysis and choosing fixes) and a locked holdout half (scored once, when v2 is final).
 - **Frontend:** Streamlit now, React after Nov 23. **Licensing:** personal use only.
 

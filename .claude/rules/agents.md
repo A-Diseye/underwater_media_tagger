@@ -34,6 +34,12 @@ paths:
 - The tools live in the core package. A Streamlit chat page and an MCP server (under `api/`) are thin clients of them, so any agent client can query the library.
 - Read-only: tools never change labels, predictions, or files.
 
+## 3. Color-correction checks (`training/color_check.py`, plan in `docs/color_plan.md`)
+
+- A, Grad-CAM hit check (Haiku, a vision check, not an agent): is the outlined heatmap region on the main animal or diver? Run on unlabeled library frames only. Its hit rate is used only if it lands in my group (hit / off / wrong tag) on at least 80% of set B; the README reports the agreement.
+- B, second judge (Sonnet): judges the blind-test pairs only after all my votes are in, also blind and randomized. It reports agreement with me and never replaces my votes or feeds back into tuning.
+- Not built: an agent that chooses correction settings itself (decided Nov 18).
+
 ## Shared rules
 
 - Models: Claude Haiku 5.5 for bulk image checks, Claude Sonnet 5.5 for agent decisions (curation and search).

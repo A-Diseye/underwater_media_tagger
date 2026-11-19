@@ -37,16 +37,22 @@ Goal: an interview-ready local demo by **Nov 23, 2026**.
 - [x] v3 factorial sweep (`training/sweep.py`: input size × zoom-out × Mixup, plus flip and frame smoothing); choose on validation + dev + Azores turtles / Mexico rays
 - [x] v3 in the app (3-seed ensemble, flip, ±2.5 s smoothing); holdout second look: v3 67% vs. v2 69% balanced accuracy, macro-F1 68% vs. 55%, animal precision roughly doubled (`docs/results/holdout-v3`)
 
-### Week 4 — Ship (Nov 19 – Nov 23)
-- [ ] Run the full app end to end locally; fix bugs
-- [ ] (If time) CLIP + linear probe as a third row in the results table
-- [ ] README: architecture, data, results (v1 and v2), confusion matrix, failure examples, tradeoffs
-- [ ] Record a 2–3 minute demo video
+### Week 4 — Subject-aware color correction (Nov 18 – Nov 23)
+Design and reasoning: [`docs/color_plan.md`](color_plan.md). Checkpoints with me after each stage.
+- [ ] `tagger/locate.py`: Grad-CAM on the v3 ensemble over 3 square crops → soft subject mask; whole frame for `scenery`, low confidence (< 0.5), or no clear subject
+- [ ] Heatmap sheets: tune the mask on set A (24 unlabeled frames), score the hit rate once on set B (30 different frames)
+- [ ] `tagger/color.py`: red (and blue) channel compensation, gray-world balance weighted to the subject, levels, optional CLAHE, strength; `whole` vs. `subject` modes
+- [ ] Streamlit: before/after + heatmap in image details and uploads, download corrected JPEG
+- [ ] Blind A/B test page (30 frames, set C): subject-aware vs. whole-frame; rule set beforehand: subject-aware wins ≥ 60% of non-tie votes
+- [ ] Agent A: Haiku Grad-CAM hit check on ~300 unlabeled frames, trusted only if it agrees with my set B marks
+- [ ] Agent B: Sonnet second judge on the blind-test pairs (after my votes); report agreement, never replaces my votes
+- [ ] README section: before/after examples, Grad-CAM hit rate and misses, blind-test result, agent agreement
 
-### Free time (secondary)
-- [ ] `locate.py`: Grad-CAM heatmap -> subject region
-- [ ] `color.py`: classic correction (white balance, red-channel compensation), weighted to the subject region
-- [ ] Streamlit: before/after view
+### My free time
+- [ ] Run the full app end to end locally; fix bugs
+- [ ] README: architecture, data, results (v1, v2, v3), confusion matrix, failure examples, tradeoffs, search agent
+- [ ] Record a 2–3 minute demo video (closing shot: upload → tag → corrected view)
+- [ ] (If time) CLIP + linear probe as a third row in the results table
 
 ## Success criteria
 
@@ -61,6 +67,8 @@ Goal: an interview-ready local demo by **Nov 23, 2026**.
 - Accuracy gap between internet-image validation and my own footage
 - GoPro vs. phone case study: accuracy on my GoPro frames vs. trip-mates' iPhone-in-housing photos from the same Bahamas dives (camera from source folder: `bahamas_shared` = phone, everything else = GoPro; filenames aren't reliable, e.g. `Group pic 1.jpg`). Practical question: is a better GoPro or a phone housing the better buy?
 - How the blurry shark frame is classified (should be `fish`)
+- Center crop vs. full frame (dev, Nov 18): v3 sees only the middle 49% of a 16:9 frame, but scoring the full frame was worse (balanced accuracy 82% → 69%; 3 crops 74%): subjects are framed near the center, and the model learned on square crops. Resolution (320 px input) is the bigger limit for small fish
+- Wrong tags and color correction: false animal tags are low-confidence (false Azores turtles median 0.37, correct dev tags 0.74), so subject mode needs confidence ≥ 0.5
 - Why sharks were merged into `fish`: 80 CLIP shark candidates shown during labeling and none were sharks, so the class couldn't be evaluated on my footage and every shark prediction would count as an error
 - Cases where Grad-CAM misses the subject
 - Curation agent: keep/reject counts per class, filter accuracy on my hand-checked sample, examples of good and bad rejections
