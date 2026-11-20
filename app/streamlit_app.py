@@ -6,16 +6,19 @@ widgets and calls tagger functions, so it can later be replaced by a React front
 Run with:  uv run streamlit run app/streamlit_app.py
 """
 
+import io
 from pathlib import Path
 
 import color_check_page  # app/ pages (Streamlit adds this folder to the import path)
 import filter_check_page
 import labeling_page
+import numpy as np
 import pandas as pd
 import search_page
 import streamlit as st
+from PIL import Image
 
-from tagger import CATEGORIES, classify, ingest, similar, store
+from tagger import CATEGORIES, classify, color, ingest, locate, similar, store
 from tagger.baseline import MODEL_ID as CLIP_MODEL_ID
 from tagger.baseline import ClipBaseline
 
@@ -37,6 +40,11 @@ def get_clip() -> ClipBaseline:
 @st.cache_resource
 def get_classifier() -> classify.Ensemble:
     return classify.Ensemble(classify.ACTIVE_CHECKPOINTS)
+
+
+@st.cache_resource
+def get_locator() -> locate.Locator:
+    return locate.Locator(get_classifier().members)
 
 
 def models() -> dict[str, str]:
@@ -77,6 +85,7 @@ def show_details(row: dict) -> None:
             scores, x="category", y="probability", horizontal=True, sort="-probability", height=220
         )
     correction_controls(row["image_id"])
+    color_section(row)
     if row["trip"] == ingest.UPLOAD_TRIP and st.button("Remove this upload", type="primary"):
         remove_upload(row["media_id"])
         st.rerun()  # closes the dialog and redraws the page without the removed upload
@@ -106,6 +115,106 @@ def correction_controls(image_id: int) -> None:
             st.rerun()
     if current:
         st.caption(f"Corrected by you to **{current}**.")
+
+
+FINISH_LABELS = [level.capitalize() for level in color.FINISHES]  # None, Light, Medium
+WHY_WHOLE = {
+    locate.SCENERY: "Whole frame: scenery has no single subject",
+    locate.UNUSABLE: "Whole frame: marked unusable",
+    locate.LOW_CONFIDENCE: "Whole frame: tag confidence under 0.5, so it may be wrong",
+    locate.NO_CLEAR_SUBJECT: "Whole frame: no clear subject in the heatmap",
+}
+
+
+@st.cache_data(max_entries=16, show_spinner="Finding the subject...")
+def located(image_id: int, file_path: str, label: str, confidence: float) -> locate.Located:
+    """Grad-CAM for one image, cached so the strength slider doesn't re-run it."""
+    with Image.open(file_path) as img:
+        return get_locator().locate(img.convert("RGB"), label, confidence)
+
+
+@st.cache_data(max_entries=32, show_spinner="Correcting colors...")
+def corrected(
+    file_path: str,
+    _found: locate.Located,
+    image_id: int,
+    mode: str,
+    strength: float,
+    finish_level: str,
+):
+    """(corrected RGB, settings). `image_id` keys the cache in place of the unhashable mask."""
+    rgb = np.asarray(Image.open(file_path).convert("RGB"))
+    mask = _found.mask if _found.has_subject else None
+    settings = color.estimate(rgb, mask, mode)
+    return color.apply(rgb, mask, settings, strength, finish_level), settings
+
+
+def color_section(row: dict) -> None:
+    """Subject-aware color correction (docs/color_plan.md): the Grad-CAM subject steers the
+    white balance, the water is kept blue. Computed only when switched on, kept in memory."""
+    st.divider()
+    image_id = row["image_id"]
+    if not st.toggle("Color correction", key=f"color-on-{image_id}"):
+        return
+    if not classify.active_checkpoints():
+        st.warning("The v3 model's weights are missing, so the subject can't be found.")
+        return
+    label, confidence = locate.shown_tag(store.connect(), image_id, classify.ACTIVE_MODEL_ID)
+    found = located(image_id, row["file_path"], label, confidence)
+    with st.container(horizontal=True, vertical_alignment="bottom"):
+        mode = st.segmented_control(
+            "Measure the color on",
+            ["Subject", "Whole frame"],
+            default="Subject" if found.has_subject else "Whole frame",
+            disabled=not found.has_subject,
+            key=f"color-mode-{image_id}",
+        )
+        strength = st.slider(
+            "Strength", 0.0, 1.0, color.STRENGTH, 0.05, key=f"color-strength-{image_id}"
+        )
+        # Three presets tuned on set A rather than free sliders: enough to adjust a photo,
+        # not enough to over-sharpen it into the crunchy look.
+        finish_level = st.segmented_control(
+            "Contrast and sharpness",
+            FINISH_LABELS,
+            default="Medium",
+            key=f"color-finish-{image_id}",
+        )
+    mode = color.SUBJECT if mode == "Subject" and found.has_subject else color.WHOLE
+    finish_level = (finish_level or "Medium").lower()  # clicking the selected one clears it
+    out, settings = corrected(row["file_path"], found, image_id, mode, strength, finish_level)
+
+    if found.has_subject and mode == color.SUBJECT:
+        what = f"Corrected for: **{label}** ({confidence:.2f})"
+    elif found.has_subject:
+        what = "Whole frame: your choice"
+    else:
+        what = WHY_WHOLE[found.reason]
+    if settings.amount < 1:
+        what += f" · Shallow: light correction ({settings.amount:.0%})"
+    st.caption(what)
+
+    corrected_tab, heatmap_tab, original_tab = st.tabs(["Corrected", "Heatmap", "Original"])
+    with Image.open(row["file_path"]) as img:
+        rgb = np.asarray(img.convert("RGB"))
+    corrected_tab.image(out, width="stretch")
+    if found.heatmap is not None:
+        heatmap_tab.image(locate.overlay(rgb, found), width="stretch")
+        heatmap_tab.caption("Red: where the model saw the tag. White: the subject it found.")
+    else:
+        heatmap_tab.caption("No heatmap for scenery or unusable frames.")
+    original_tab.image(rgb, width="stretch")
+
+    buffer = io.BytesIO()
+    Image.fromarray(out).save(buffer, format="JPEG", quality=92)
+    st.download_button(
+        "Download corrected JPEG",
+        buffer.getvalue(),
+        file_name=f"{Path(row['file_path']).stem}_corrected.jpg",
+        mime="image/jpeg",
+        key=f"color-download-{image_id}",
+        on_click="ignore",  # a rerun would close the details dialog
+    )
 
 
 def remove_upload(media_id: int) -> None:

@@ -261,16 +261,20 @@ def finish(img: np.ndarray, contrast: float, sharpen: float) -> np.ndarray:
     return np.clip(img * ratio[..., None], 0, 1)
 
 
-def apply(image, mask, settings: Settings, strength: float = STRENGTH) -> np.ndarray:
+def apply(
+    image, mask, settings: Settings, strength: float = STRENGTH, finish_level: str | None = None
+) -> np.ndarray:
     """The corrected frame (H x W x 3 uint8). `strength` 0 gives back the original. `mask` is
     unused here (it was used to measure the settings), but kept so callers pass the same
-    arguments to `estimate` and `apply`."""
+    arguments to `estimate` and `apply`. `finish_level`: a FINISHES key, or None for the
+    defaults (CONTRAST, SHARPEN)."""
     original = _as_float(image)
     out = compensate(original, settings.red_boost, settings.blue_boost)
     out = _levels(_balance(out, settings, original), settings.black, settings.white)
     if settings.clahe:
         out = _clarity(out)
-    out = finish(out, CONTRAST, SHARPEN)
+    contrast, sharpen = FINISHES[finish_level] if finish_level else (CONTRAST, SHARPEN)
+    out = finish(out, contrast, sharpen)
     share = float(np.clip(strength, 0, 1)) * settings.amount
     out = original + share * (out - original)
     return (np.clip(out, 0, 1) * 255).round().astype(np.uint8)

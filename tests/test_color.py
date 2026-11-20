@@ -146,3 +146,14 @@ def test_shallow_frames_get_less_correction(monkeypatch):
     frame = (shallow * 255).round().astype(np.uint8)
     assert color.estimate(frame, mode=color.WHOLE).amount == pytest.approx(color.SHALLOW_MIN)
     assert color.estimate((deep * 255).astype(np.uint8), mode=color.WHOLE).amount == 1.0
+
+
+def test_finish_level_picks_a_preset():
+    frame, mask = _with_patch([0.6, 0.6, 0.6])
+    s = color.estimate(frame, mask, color.SUBJECT)
+    plain = color.apply(frame, mask, s, 1.0, "none")
+    medium = color.apply(frame, mask, s, 1.0, "medium")
+    assert not np.array_equal(plain, medium)
+    assert np.array_equal(color.apply(frame, mask, s, 1.0), medium)  # medium is the default
+    with pytest.raises(KeyError):
+        color.apply(frame, mask, s, 1.0, "extreme")
