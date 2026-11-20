@@ -240,7 +240,7 @@ under white light. So you judge, blind.
 - **False tags that pass the gate are still in the set.** Each frame has a checkbox: "there's no
   [turtle] in this frame". The README then reports separately how frames with wrong tags came
   out. These are unlabeled library frames, so this isn't test labeling.
-- **Storage:** votes go to `data/color_votes.json`. The page reveals nothing until all 30 are in.
+- **Storage:** pairs and votes go to `data/color/test_C/` (`votes_me.json`, `votes_sonnet.json`). The page reveals nothing until all 30 are in.
 - **The rule, set before the test:** subject-aware counts as better if it wins at least 60% of
   the non-tie votes. The README reports the win rate with its uncertainty (30 votes is small, so
   20/30 is about p = 0.05 against a coin flip).
@@ -493,4 +493,44 @@ divers and scenery use workflows, not agents.
   0.2, sharpening 0.8), shallow rule on. Some frames still look off to me; tuning further, or
   learning a correction instead of hand-built steps, would take more time than is left before
   Nov 23. Noted as a limitation for the README, and the blind test measures where it stands.
+- **Blind test set exported** (Nov 20): 24 pairs from set C (fish, rays and diver 6 each,
+  invertebrates 4, turtles 2), subject on the left in 12. Both sides use the locked defaults
+  (red 0.8, medium finish, shallow rule, strength 0.8); only where the color is measured
+  differs. Code: `training/color_test.py`, page: Color test.
+- **Blind test result** (Nov 20, 24 pairs, my votes): subject-aware 8, whole-frame 8, no
+  difference 4; 4 frames flagged as wrong tags (reported apart). Win rate 50% (95% range
+  28-72%), so it **fails the pre-set 60% rule**. By category: divers 6-0 for subject-aware
+  (p = 0.016, but one of five categories looked at after the fact), rays 0-5, fish 1-2 (3 ties),
+  invertebrates 0-1, turtles 1-0. Cause of the ray losses, seen after unblinding: four of the
+  five ray frames look down at sand with no open water, so "the least red pixels are water"
+  picked the sand, which then kept the half-strength correction and stayed cyan; the hazy
+  eagle-ray frame went saturated blue. Divers are mostly shot against real open water, where
+  the step works as intended. Sonnet (agent B, $0.18): 7 / 4 / 13 ties; agrees with my pick on
+  54% of pairs (60% on frames with a real subject). It calls far more pairs "no difference".
+  The result stands as recorded; any fix would need fresh frames to test.
+- **Water detection fixed, round 2 set up** (Nov 20, my call: working properly over finishing
+  early). Open water is smooth and sand is textured: on set A open water's local variation is
+  under 0.01, sand and reef 0.02-0.08. A pixel now counts as water only inside a sizeable smooth
+  area (small flat compression blocks dropped) and near the water's color; a frame with under
+  5% of it has no water, so the subject's correction applies everywhere. The open-water edge
+  fades over 4% of the short side (a sharp edge left a blotch along the horizon on #8228).
+  Checked on set A: the sand frame #12584 no longer stays cyan; open-water frames unchanged.
+  **Round 2:** 30 fresh pool pairs (6 per category, none of the 25 Grad-CAM final frames),
+  same rules (60% bar, blind, Sonnet after). Round 1 stays the main, pre-registered result.
+- **Round 2 result** (Nov 20, 30 fresh pool pairs, my votes, version with the water fix):
+  subject-aware 16, whole-frame 2, no difference 7; 5 flagged wrong tags. Win rate 89% (95%
+  range 67-97%, one-sided p = 0.0007): **passes the 60% rule**. Rays 6-0 (0-5 in round 1),
+  turtles 4-0, divers 4-1, fish 2-1, invertebrates 0-0 (one tie; most flagged wrong tags).
+  Sonnet ($0.21): 5-1 with 19 ties on frames with a real subject; agrees with my pick on 60%.
+  Caveats: different frames from round 1, the fix was designed after seeing round 1, and I
+  knew a fix was being tested (each pair was still blind).
+- **Gradient note from others** (Nov 20): far-away shots may have slightly too much gradient.
+  On set A, clarity (CLAHE) and contrast on open water turn its smooth falloff into blotches
+  (#4153). Trying no clarity or contrast on the water (as in Adobe's own example) and no water
+  darkening. Any change here comes after
+  round 2, so round 2 doesn't cover it.
+- **Smooth water chosen** (Nov 20): open water gets no clarity, contrast or sharpening; the 5%
+  darkening stays. Both are switches in the app (Smooth water, Darken water, on by default;
+  greyed out when a frame has no open water). Judged by eye on set A after round 2, so round 2
+  covers the version before this change.
 

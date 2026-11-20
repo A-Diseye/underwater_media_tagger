@@ -127,14 +127,16 @@ WHY_WHOLE = {
 }
 
 
-@st.cache_data(max_entries=16, show_spinner="Finding the subject...")
+# The caches' own spinners are drawn in a small slot that gets cut off inside the details
+# dialog, so the section shows its own (below).
+@st.cache_data(max_entries=16, show_spinner=False)
 def located(image_id: int, file_path: str, label: str, confidence: float) -> locate.Located:
     """Grad-CAM for one image, cached so the strength slider doesn't re-run it."""
     with Image.open(file_path) as img:
         return get_locator().locate(img.convert("RGB"), label, confidence)
 
 
-@st.cache_data(max_entries=32, show_spinner="Correcting colors...")
+@st.cache_data(max_entries=32, show_spinner=False)
 def corrected(
     file_path: str,
     _found: locate.Located,
@@ -142,12 +144,29 @@ def corrected(
     mode: str,
     strength: float,
     finish_level: str,
+    smooth_water: bool,
+    darken_water: bool,
 ):
     """(corrected RGB, settings). `image_id` keys the cache in place of the unhashable mask."""
     rgb = np.asarray(Image.open(file_path).convert("RGB"))
     mask = _found.mask if _found.has_subject else None
     settings = color.estimate(rgb, mask, mode)
-    return color.apply(rgb, mask, settings, strength, finish_level), settings
+    out = color.apply(rgb, mask, settings, strength, finish_level, smooth_water, darken_water)
+    return out, settings
+
+
+def _color_key(name: str, image_id: int) -> str:
+    """Key of one of an image's color controls. It includes a reset count: the browser keeps
+    each widget's value by key, so clearing it on the server alone didn't move the slider back.
+    New keys make new widgets, which start at their defaults."""
+    resets = st.session_state.get(f"color-resets-{image_id}", 0)
+    return f"color-{name}-{image_id}-{resets}"
+
+
+def _reset_color(image_id: int) -> None:
+    """Back to the subject the model found and the settings tuned on set A."""
+    count = f"color-resets-{image_id}"
+    st.session_state[count] = st.session_state.get(count, 0) + 1
 
 
 def color_section(row: dict) -> None:
@@ -161,17 +180,18 @@ def color_section(row: dict) -> None:
         st.warning("The v3 model's weights are missing, so the subject can't be found.")
         return
     label, confidence = locate.shown_tag(store.connect(), image_id, classify.ACTIVE_MODEL_ID)
-    found = located(image_id, row["file_path"], label, confidence)
+    with st.spinner("Finding the subject (a few seconds the first time)..."):
+        found = located(image_id, row["file_path"], label, confidence)
     with st.container(horizontal=True, vertical_alignment="bottom"):
         mode = st.segmented_control(
             "Measure the color on",
             ["Subject", "Whole frame"],
             default="Subject" if found.has_subject else "Whole frame",
             disabled=not found.has_subject,
-            key=f"color-mode-{image_id}",
+            key=_color_key("mode", image_id),
         )
         strength = st.slider(
-            "Strength", 0.0, 1.0, color.STRENGTH, 0.05, key=f"color-strength-{image_id}"
+            "Strength", 0.0, 1.0, color.STRENGTH, 0.05, key=_color_key("strength", image_id)
         )
         # Three presets tuned on set A rather than free sliders: enough to adjust a photo,
         # not enough to over-sharpen it into the crunchy look.
@@ -179,11 +199,43 @@ def color_section(row: dict) -> None:
             "Contrast and sharpness",
             FINISH_LABELS,
             default="Medium",
-            key=f"color-finish-{image_id}",
+            key=_color_key("finish", image_id),
         )
     mode = color.SUBJECT if mode == "Subject" and found.has_subject else color.WHOLE
     finish_level = (finish_level or "Medium").lower()  # clicking the selected one clears it
-    out, settings = corrected(row["file_path"], found, image_id, mode, strength, finish_level)
+    # The water switches are drawn after the correction (they're greyed out when there's no
+    # open water, which only the correction finds), so their values are read first.
+    keys = {"smooth": _color_key("smooth", image_id), "darken": _color_key("darken", image_id)}
+    smooth_water = st.session_state.get(keys["smooth"], color.SMOOTH_WATER)
+    darken_water = st.session_state.get(keys["darken"], color.DARKEN_WATER)
+    with st.spinner("Correcting colors..."):
+        out, settings = corrected(
+            row["file_path"],
+            found,
+            image_id,
+            mode,
+            strength,
+            finish_level,
+            smooth_water,
+            darken_water,
+        )
+    no_water = mode == color.WHOLE or settings.water_color is None
+    with st.container(horizontal=True):
+        st.toggle(
+            "Smooth water",
+            value=color.SMOOTH_WATER,
+            key=keys["smooth"],
+            disabled=no_water,
+            help="No clarity or contrast on open water, so wide shots don't get a strong "
+            "gradient or blotches.",
+        )
+        st.toggle(
+            "Darken water",
+            value=color.DARKEN_WATER,
+            key=keys["darken"],
+            disabled=no_water,
+            help="Open water a little darker (5%), which also hides floating particles.",
+        )
 
     if found.has_subject and mode == color.SUBJECT:
         what = f"Corrected for: **{label}** ({confidence:.2f})"
@@ -193,6 +245,8 @@ def color_section(row: dict) -> None:
         what = WHY_WHOLE[found.reason]
     if settings.amount < 1:
         what += f" · Shallow: light correction ({settings.amount:.0%})"
+    if mode == color.SUBJECT and settings.water_color is None:
+        what += " · No open water"
     st.caption(what)
 
     corrected_tab, heatmap_tab, original_tab = st.tabs(["Corrected", "Heatmap", "Original"])
@@ -208,14 +262,34 @@ def color_section(row: dict) -> None:
 
     buffer = io.BytesIO()
     Image.fromarray(out).save(buffer, format="JPEG", quality=92)
-    st.download_button(
-        "Download corrected JPEG",
-        buffer.getvalue(),
-        file_name=f"{Path(row['file_path']).stem}_corrected.jpg",
-        mime="image/jpeg",
-        key=f"color-download-{image_id}",
-        on_click="ignore",  # a rerun would close the details dialog
+    defaults = {
+        _color_key("mode", image_id): "Subject" if found.has_subject else "Whole frame",
+        _color_key("strength", image_id): color.STRENGTH,
+        _color_key("finish", image_id): "Medium",
+        _color_key("smooth", image_id): color.SMOOTH_WATER,
+        _color_key("darken", image_id): color.DARKEN_WATER,
+    }
+    adjusted = any(
+        key in st.session_state and st.session_state[key] != value
+        for key, value in defaults.items()
     )
+    with st.container(horizontal=True):
+        st.download_button(
+            "Download corrected JPEG",
+            buffer.getvalue(),
+            file_name=f"{Path(row['file_path']).stem}_corrected.jpg",
+            mime="image/jpeg",
+            key=f"color-download-{image_id}",
+            on_click="ignore",  # a rerun would close the details dialog
+        )
+        st.button(
+            "Reset to defaults",
+            key=f"color-reset-{image_id}",
+            on_click=_reset_color,
+            args=(image_id,),
+            disabled=not adjusted,
+            help="Back to the subject the model found and the tuned settings.",
+        )
 
 
 def remove_upload(media_id: int) -> None:

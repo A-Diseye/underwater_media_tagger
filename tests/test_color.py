@@ -157,3 +157,50 @@ def test_finish_level_picks_a_preset():
     assert np.array_equal(color.apply(frame, mask, s, 1.0), medium)  # medium is the default
     with pytest.raises(KeyError):
         color.apply(frame, mask, s, 1.0, "extreme")
+
+
+def _sand_frame(seed=0):
+    """Looking down at sand: no open water, and the grainy sand is as cyan as water."""
+    rng = np.random.default_rng(seed)
+    grain = rng.normal(0, 0.08, (120, 160, 1)).astype(np.float32)
+    sand = np.clip(np.array([0.2, 0.5, 0.55], np.float32) * (1 + grain), 0, 1)
+    return (sand * 255).round().astype(np.uint8)
+
+
+def test_textured_sand_is_not_water():
+    frame = _sand_frame()
+    mask = np.zeros(frame.shape[:2], np.float32)
+    mask[40:80, 60:100] = 1.0
+    s = color.estimate(frame, mask, color.SUBJECT)
+    assert s.water_color is None  # no open water: the subject's correction applies everywhere
+    whole = color.correct(frame, mask, color.WHOLE, 1.0)
+    subject = color.correct(frame, mask, color.SUBJECT, 1.0)
+    cast = lambda img: _mean(img, slice(0, 30), slice(0, 50))  # noqa: E731
+    assert cast(subject)[2] - cast(subject)[0] < 0.25 * 255  # the sand isn't left cyan
+    assert np.abs(cast(subject) - cast(whole)).max() < 0.15 * 255
+
+
+def test_smooth_open_water_is_found():
+    frame = _frame()  # flat water above, sand below
+    water = color.open_water(frame.astype(np.float32) / 255)
+    assert water[10:50, 10:150].mean() > 0.9
+    mask = np.zeros(frame.shape[:2], np.float32)
+    mask[70:100, 60:100] = 1.0
+    assert color.estimate(frame, mask, color.SUBJECT).water_color is not None
+
+
+def test_water_switches_change_only_the_water():
+    frame, mask = _with_patch([0.6, 0.6, 0.6])
+    rng = np.random.default_rng(1)
+    frame[:60] = np.clip(frame[:60] + rng.normal(0, 2, frame[:60].shape), 0, 255).astype(np.uint8)
+    s = color.estimate(frame, mask, color.SUBJECT)
+    assert s.water_color is not None
+    default = color.apply(frame, mask, s, 1.0)
+    lighter = color.apply(frame, mask, s, 1.0, darken_water=False)
+    water, patch = (slice(5, 50), slice(5, 155)), (slice(75, 95), slice(65, 95))
+    assert _mean(lighter, *water).mean() > _mean(default, *water).mean()  # undarkened water
+    assert np.abs(_mean(lighter, *patch) - _mean(default, *patch)).max() < 2  # subject untouched
+    explicit = color.apply(frame, mask, s, 1.0, smooth_water=True, darken_water=True)
+    assert np.array_equal(default, explicit)  # both are on by default
+    textured = color.apply(frame, mask, s, 1.0, smooth_water=False)
+    assert not np.array_equal(default, textured)  # clarity and contrast now reach the water

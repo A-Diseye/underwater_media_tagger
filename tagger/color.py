@@ -14,7 +14,9 @@ a small animal, so painting with it (full correction inside, half outside) showe
 milky halo (set A, #4153). Lightroom avoids this because its masks follow real edges. Here the
 water is found by color instead, like Lightroom's color-range and "Select Water" masks: the
 water's color is read from the least red pixels outside the subject mask, and every pixel near
-that color, inside the mask or not, counts as water.
+that color, inside the mask or not, counts as water. Water must also be smooth: sand of the same
+color is textured, and a frame looking down at the bottom has no open water at all (first blind
+test: every ray frame on sand stayed cyan before this rule).
 
 The mask comes from tagger/locate.py, but this module doesn't care where it came from, and it
 doesn't import torch.
@@ -49,8 +51,25 @@ RED_AMOUNT = 0.8  # set A: 0.7 / 0.75 / 0.8 / 0.85 / 1.0 compared; 0.75 and 0.8 
 BLUE_GAIN = (0.5, 3.0)
 WATER_STRENGTH = 0.5  # on water the gains apply as g ** 0.5, so the water stays blue
 WATER_EXPOSURE = 0.95  # and the water is a little darker, which also hides backscatter
-WATER_SAMPLE = 0.3  # the water's color: median of the least red 30% of pixels outside the mask
+WATER_SAMPLE = 0.3  # the water's color: median of the least red 30% of open-water candidates
 WATER_SIGMA = 0.06  # how close (in r, g, b shares of brightness) a pixel must be to count
+# Open water is smooth; sand and reef are textured. The first blind test lost every ray frame:
+# looking down at sand there was no open water, so the least red pixels were sand, which kept
+# the water's half correction and stayed cyan. Now a pixel counts as water only inside a
+# sizeable smooth area, and a frame without enough of it has no water at all. On set A, open
+# water's local variation is under 0.01 (lightness, 0-1); sand and reef are mostly 0.02-0.08.
+WATER_SMOOTH = 0.012  # local standard deviation of lightness below which a pixel is smooth
+WATER_WINDOW = 0.03  # neighborhood for that, as a fraction of the short side
+# Smooth patches narrower than this (fraction of the short side) are dropped: video compression
+# leaves small flat blocks inside sand.
+WATER_PATCH = 0.085
+WATER_MIN_SHARE = 0.05  # less open water than this share of the frame counts as none
+WATER_FADE = 0.04  # open water fades out over this fraction of the short side
+# Open water gets no clarity, contrast or sharpening (photographers give the water mask only an
+# exposure change): on wide shots they stretched its smooth surface-to-depth falloff into a
+# visible gradient and blotches (feedback from others; set A, #4153). Chosen after round 2.
+SMOOTH_WATER = True
+DARKEN_WATER = True  # WATER_EXPOSURE on open water; the app can switch either off
 LEVELS = (0.5, 99.5)  # black and white point percentiles
 CLAHE_CLIP = 1.5  # light clarity; heavy clarity or dehaze makes water look dirty
 # Finish, after the color is right: water scatters light, so dive photos are hazy and soft.
@@ -144,31 +163,64 @@ def _shares(img: np.ndarray) -> np.ndarray:
     return img / np.maximum(img.sum(axis=2, keepdims=True), 1e-6)
 
 
-def water_color(img: np.ndarray, mask: np.ndarray) -> tuple[float, float, float]:
-    """The water's color as r, g, b shares: water is the least red thing in a dive photo."""
+def open_water(img: np.ndarray) -> np.ndarray:
+    """0-1 per pixel: inside a sizeable smooth area, where open water can be. Measured on a
+    copy with ESTIMATE_SIDE short side, so the result doesn't depend on resolution, and
+    returned at the image's own size."""
+    h, w = img.shape[:2]
+    scale = ESTIMATE_SIDE / min(h, w)
+    small = cv2.resize(img, (round(w * scale), round(h * scale)), interpolation=cv2.INTER_AREA)
+    lightness = small.mean(axis=2)
+    k = max(3, int(WATER_WINDOW * ESTIMATE_SIDE) | 1)
+    mean = cv2.blur(lightness, (k, k))
+    spread = np.sqrt(np.maximum(cv2.blur(lightness * lightness, (k, k)) - mean * mean, 0))
+    patch = max(3, int(WATER_PATCH * ESTIMATE_SIDE) | 1)
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (patch, patch))
+    smooth = cv2.morphologyEx((spread < WATER_SMOOTH).astype(np.uint8), cv2.MORPH_OPEN, kernel)
+    # Fade over a wide band: the edge between open water and distant sand isn't a subject edge,
+    # and a sharp one showed as a blotchy patch along the horizon (set A, #8228).
+    fade = WATER_FADE * ESTIMATE_SIDE
+    soft = cv2.GaussianBlur(smooth.astype(np.float32), (0, 0), sigmaX=fade)
+    return cv2.resize(soft, (w, h), interpolation=cv2.INTER_LINEAR)
+
+
+def water_color(img: np.ndarray, mask: np.ndarray) -> tuple[float, float, float] | None:
+    """The water's color as r, g, b shares, or None if the frame has no open water. Candidates
+    are smooth, outside the subject, and not near-black; water is the least red of them."""
     shares = _shares(img)
-    outside = (mask < 0.5) & (img.mean(axis=2) > DARK)
-    if outside.sum() < 50:
-        outside = mask < 0.5 if (mask < 0.5).sum() >= 50 else np.ones(mask.shape, bool)
-    candidates = shares[outside]
+    smooth = (open_water(img) > 0.5) & (mask < 0.5)
+    if smooth.mean() < WATER_MIN_SHARE:
+        return None
+    candidates = shares[smooth & (img.mean(axis=2) > DARK)]
+    if len(candidates) < 50:
+        return None
     redness = candidates[:, 0]
     least_red = candidates[redness <= np.quantile(redness, WATER_SAMPLE)]
     return tuple(float(v) for v in np.median(least_red, axis=0))
 
 
 def water_map(img: np.ndarray, color: tuple[float, float, float]) -> np.ndarray:
-    """0-1 per pixel: how much it looks like the water, by color alone (edges stay sharp)."""
+    """0-1 per pixel: how much it is water. It must be close to the water's color (which keeps
+    edges sharp around the subject) and inside open, smooth water (which keeps sand of the
+    same color out)."""
     distance = np.linalg.norm(_shares(img) - np.array(color, np.float32), axis=2)
     water = np.exp(-((distance / WATER_SIGMA) ** 2)).astype(np.float32)
-    return cv2.GaussianBlur(water, (0, 0), sigmaX=1.0)  # no single-pixel speckle
+    water = cv2.GaussianBlur(water, (0, 0), sigmaX=1.0)  # no single-pixel speckle
+    return water * open_water(img)
 
 
-def _balance(img: np.ndarray, s: Settings, original: np.ndarray) -> np.ndarray:
+def _balance(
+    img: np.ndarray,
+    s: Settings,
+    original: np.ndarray,
+    darken: bool = True,
+    water: np.ndarray | None = None,
+) -> np.ndarray:
     if s.mode == WHOLE or s.water_color is None:
         return np.clip(img * np.array(s.subject_gains, np.float32), 0, 1)
-    w = water_map(original, s.water_color)[..., None]
+    w = (water if water is not None else water_map(original, s.water_color))[..., None]
     log_gains = (1 - w) * np.log(s.subject_gains) + w * np.log(s.water_gains)
-    exposure = (1 - w) + w * WATER_EXPOSURE
+    exposure = (1 - w) + w * (WATER_EXPOSURE if darken else 1.0)
     return np.clip(img * np.exp(log_gains).astype(np.float32) * exposure, 0, 1)
 
 
@@ -262,19 +314,34 @@ def finish(img: np.ndarray, contrast: float, sharpen: float) -> np.ndarray:
 
 
 def apply(
-    image, mask, settings: Settings, strength: float = STRENGTH, finish_level: str | None = None
+    image,
+    mask,
+    settings: Settings,
+    strength: float = STRENGTH,
+    finish_level: str | None = None,
+    smooth_water: bool | None = None,
+    darken_water: bool | None = None,
 ) -> np.ndarray:
     """The corrected frame (H x W x 3 uint8). `strength` 0 gives back the original. `mask` is
     unused here (it was used to measure the settings), but kept so callers pass the same
-    arguments to `estimate` and `apply`. `finish_level`: a FINISHES key, or None for the
-    defaults (CONTRAST, SHARPEN)."""
+    arguments to `estimate` and `apply`. `finish_level`: a FINISHES key; `smooth_water`,
+    `darken_water`: switch those off or on. None means the module defaults."""
+    smooth_water = SMOOTH_WATER if smooth_water is None else smooth_water
+    darken_water = DARKEN_WATER if darken_water is None else darken_water
     original = _as_float(image)
+    water = None
+    if settings.mode == SUBJECT and settings.water_color is not None:
+        water = water_map(original, settings.water_color)
     out = compensate(original, settings.red_boost, settings.blue_boost)
-    out = _levels(_balance(out, settings, original), settings.black, settings.white)
+    out = _balance(out, settings, original, darken_water, water)
+    out = _levels(out, settings.black, settings.white)
+    plain = out
     if settings.clahe:
         out = _clarity(out)
     contrast, sharpen = FINISHES[finish_level] if finish_level else (CONTRAST, SHARPEN)
     out = finish(out, contrast, sharpen)
+    if water is not None and smooth_water:  # the water keeps its tones as balanced
+        out = out * (1 - water[..., None]) + plain * water[..., None]
     share = float(np.clip(strength, 0, 1)) * settings.amount
     out = original + share * (out - original)
     return (np.clip(out, 0, 1) * 255).round().astype(np.uint8)
