@@ -455,6 +455,133 @@ runs v3.
   numbers are weaker evidence than v2's were. A next model needs newly labeled footage from a
   new trip.
 
+### Subject-aware color correction: the classifier shows where to correct (Nov 18–20, 2026)
+
+Water absorbs red light first, so dive photos come out blue-green and flat. One-tap tools
+(phone apps, auto white balance) measure the color cast on the whole frame. In a dive photo
+most of the frame is water, so the water decides the correction. Underwater photographers do it
+differently in Lightroom: they white-balance on something that should be neutral, mask the
+subject and correct it fully, and mask the water separately to keep it blue. This feature
+automates that workflow. The classifier already knows where the animal is, so no one draws a
+mask by hand.
+
+![Original, one-tap whole-frame correction, and subject-aware correction of a turtle over a wreck](docs/images/color_turtle_12509.jpg)
+
+![The same comparison for a fish over an Azores wreck](docs/images/color_fish_2763.jpg)
+
+![The same comparison for a ray over sand with open water above](docs/images/color_ray_8228.jpg)
+
+*Whole frame neutralizes the water to gray-teal. Subject-aware measures the color on the
+subject and keeps the water blue. Strength 0.8, the app's default.*
+
+**1. Find the subject with Grad-CAM (`tagger/locate.py`).** Grad-CAM asks the CNN where its
+evidence for a tag was: it weights the last feature map's channels by how much each pushed the
+score toward, say, "turtle". This is one reason v3 is a CNN (ConvNeXt), not a vision
+transformer. The heatmap is averaged over v3's three seeds, and the hot region becomes a soft
+mask, grown and feathered. Scenery, unusable frames, and tags under 0.5 confidence fall back
+to whole-frame correction: low-confidence tags are mostly the wrong ones (false Azores turtles
+have a median confidence of 0.37).
+
+![A turtle frame and its Grad-CAM heatmap with the subject outline](docs/images/gradcam_turtle_12509.jpg)
+
+**2. Correct like a photographer (`tagger/color.py`).** No learned model here, just classic image
+processing modeled on Lightroom and DaVinci Resolve workflows:
+
+- Rebuild the red channel from green (Ancuti et al., 2018), as video editors do for footage
+  shot without a red filter. White balance alone can't fix a nearly empty channel.
+- White-balance on the least colorful pixels: an automated eyedropper. The red gain is never
+  below 1, because water removes red and never adds it. This keeps an orange nudibranch orange.
+- Keep open water blue: it gets half the correction and is darkened 5%, which also hides
+  floating particles. Water is found by color and smoothness, not by the Grad-CAM mask, whose
+  soft blob would show as a halo.
+- Levels, light local contrast, a gentle contrast curve and edge-only sharpening. Shallow
+  frames, where red still survives, get less of everything.
+
+Settings were chosen by eye on one frame set (A) and judged on others. Red was dialed back to
+80%, because full correction looked too warm.
+
+**Does the outline land on the subject?** I marked frames strictly: a hit means the outline
+covers the whole subject, because a color correction needs all of it.
+
+| Masks | Frames | Covers the whole subject | On the subject at all |
+| --- | --- | --- | --- |
+| As first built (set B) | 19 | 7 (37%) | 18 (95%) |
+| Grown 12%, nearby hot spots joined (fresh pool frames) | 22 | 13 (59%) | 22 (100%) |
+
+Grad-CAM finds the right place but stops short of the edges: it marks the most telling parts,
+such as a diver's fins rather than the torso. In set B, 8 of the 27 frames that passed the
+0.5 confidence gate had no subject a stranger could see, so they weren't counted.
+
+**Agent A, Haiku as a second marker: didn't pass.** Haiku 5.5 marked the same frames with the
+same definitions. Its larger count would only be used if it agreed with me on at least 80% of
+set B, a bar set before its first run. It reached 59%, then 74% after we both switched to the
+strict definition (its reasons showed I'd been lenient). So its count isn't used.
+
+**The blind test.** There's no ground truth for "correct" underwater color, so I judged. Each
+frame was corrected both ways and shown side by side, in a random order with the methods
+unnamed. I picked left, right, or no difference. I could flip between them with the arrow keys,
+and flag frames whose tag was wrong. The rule was set before testing: subject-aware must win at
+least 60% of the votes that aren't ties.
+
+| | Round 1 (24 pairs, set C) | Round 2 (30 fresh pairs) |
+| --- | --- | --- |
+| Subject-aware / whole frame / no difference | 8 / 8 / 4 | 16 / 2 / 7 |
+| Win rate (95% range) | 50% (28–72%): **fails** | 89% (67–97%), p = 0.0007: **passes** |
+| Rays | 0–5 | 6–0 |
+| Turtles / divers / fish | 1–0 / 6–0 / 1–2 | 4–0 / 4–1 / 2–1 |
+| Flagged as wrong tags (not counted) | 4 | 5 |
+| Sonnet agrees with my pick (agent B) | 54% | 60% |
+
+**Round 1 failed, and the ray frames show why.** Four of the five rays were shot looking down
+at sand, with no open water in view. The water detection assumed the least red pixels were
+water, but here they were sand, so the whole sea floor kept the water's half-strength
+correction and stayed cyan:
+
+![A ray on sand: whole frame, subject-aware in round 1, and after the fix](docs/images/color_ray_on_sand_4273.jpg)
+
+*Left and middle: the round 1 pair as I voted on it. Right: after the fix. With no open water,
+the subject's correction now applies everywhere.*
+
+**The fix:** open water is smooth and sand is textured. On set A, open water's local brightness
+variation is under 0.01 (on a 0–1 scale), while sand and reef sit at 0.02–0.08. A pixel now
+counts as water only inside a sizeable smooth area. A frame with less than 5% of it has no
+water at all. Round 2 tested the fixed version on 30 fresh frames, and rays went from 0–5 to
+6–0.
+
+**Read round 2 with its caveats.** It used different frames from round 1. The fix was designed
+after seeing round 1 fail, and I knew a fix was being tested (though each pair was still
+blind). Round 1 remains the pre-registered result. After round 2, others who looked at the
+results said wide shots had too much gradient. Clarity and contrast were stretching the
+water's natural falloff into blotches, so open water now gets neither, as in Adobe's own
+example. No blind round covers that last change.
+
+**Agent B, Sonnet as a second judge.** Sonnet 5.5 judged the same pairs, in its own random
+order, only after all my votes were in ($0.18 and $0.21). It agreed with my pick on 54% and
+60% of pairs, mostly because it called far more pairs "no difference" (19 of 25 in round 2).
+Where it did pick, it leaned the same way as me in round 2 (5 to 1).
+
+**In the app:** open an image's details and switch on Color correction. It shows the corrected
+image, the heatmap, and the original. Controls cover the mode (subject or whole frame),
+strength, contrast and sharpness presets, and the two water switches. There's also a reset
+button and a full-resolution download. Uploads get the same view.
+
+**Known weaknesses**
+
+- **Grad-CAM misses some subjects entirely.** #5705: evidence on a hand and a regulator, not the
+  diver. #3990: a camouflaged fish, with evidence on the sand texture. #8667: a second hot spot
+  on a finger.
+- **Wrong tags pass the 0.5 gate.** I flagged 9 blind-test frames whose tagged subject wasn't
+  there, including a lionfish tagged invertebrates (its feathery fins look like a crinoid). In
+  the Grad-CAM checks, an eel was also tagged invertebrates, and two Azores frames tagged
+  turtles had no turtle.
+- **Small samples.** 24 and 30 votes from one judge. Per-category results rest on 1–6 frames
+  each, and invertebrates got almost no real votes in round 2.
+- **Stills only.** In video, subject mode would flicker more than whole frame, because the mask
+  moves and frames near 0.5 confidence switch modes. The code separates measuring from
+  applying, so settings could be smoothed over a clip later.
+- **Some frames still look off to me.** These are hand-built steps, not a learned correction.
+  A learned model would need reference photos, which I don't have.
+
 ## Findings so far
 
 ### Zero-shot CLIP mistakes a camouflaged lizardfish for a ray
@@ -527,3 +654,12 @@ The app runs locally by design. Making it public would shift the costs:
   browser before upload, or capping file size.
 - **Security:** user accounts, per-user upload limits, and abuse protection. Today none are
   needed, because the app only accepts connections from my own machine.
+
+### Color correction next steps
+
+- **Video:** correct whole clips by smoothing the measured settings over time, and blend between
+  subject and whole-frame modes instead of switching, so the color doesn't flicker.
+- **A learned correction:** train on pairs of raw and hand-edited photos. Hand-built steps
+  plateau, and some frames still look off.
+- **Tighter masks:** a segmentation model (or Grad-CAM refined along image edges) would cover
+  whole subjects, not just their most telling parts.
