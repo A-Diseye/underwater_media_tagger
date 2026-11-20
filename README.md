@@ -3,7 +3,7 @@
 A local app that tags underwater photos and dive videos by subject (turtles, rays, fish,
 invertebrates, diver, scenery) and applies color correction tuned to where the subject is.
 
-Work in progress. See `docs/PLAN.md` for the project plan.
+Design notes: `docs/PLAN.md` (project plan) and `docs/color_plan.md` (color correction).
 
 ## Setup
 
