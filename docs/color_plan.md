@@ -121,47 +121,93 @@ ConvNeXt over a ViT.
 
 ## Stage 2: correct the color (`tagger/color.py`)
 
-Each step runs on the full-resolution image as floats in 0–1. Every statistic is a weighted
-average: weight = mask × 0.8 + 0.2 everywhere else. The subject dominates, but the frame still
-counts a little, so a small subject can't produce extreme corrections.
+Revised Nov 19 after looking at how underwater photographers edit (sources at the end of this
+section). They don't make the whole frame neutral. In Lightroom they white-balance on something
+that should be gray, mask the subject and give it extra warmth and contrast, and mask the water
+separately to keep it blue and slightly darker (Adobe's own tutorial neutralizes a shark and
+"the water was kept blue"). Video editors without a red filter rebuild the red channel from
+green in DaVinci Resolve, then balance. One-tap apps (Dive+, DiveColor) correct the whole frame
+automatically. Our Grad-CAM mask plays the part of Lightroom's "Select Subject".
 
-1. **Red channel compensation** (Ancuti et al., 2018). Where red is weak but green is strong,
-   red is partly rebuilt from green:
-   `R' = R + α · (mean G − mean R) · (1 − R) · G`, with α = 1.
-   - **Why:** white balance alone can't fix a channel that's nearly empty. Multiplying a red
-     channel that's mostly zero just amplifies noise and gives magenta blotches.
-   - **Same for blue in green water:** if blue is weaker than green (the Azores often look
-     green), blue is compensated the same way.
-2. **White balance (gray world).** Assume the subject region should average to neutral gray,
-   and scale each channel so it does.
-   - **Gain limits:** each gain stays between 0.5× and 3×. A mostly-blue frame can't turn
-     orange, and dark frames can't blow up.
-   - **Where subject-awareness comes in:** a whole-frame correction measures the cast on the
-     water, while this one measures it on the subject.
-3. **Levels.** A per-channel stretch between the 0.5th and 99.5th percentiles, measured on the
-   whole frame so nothing clips badly.
-4. **Local contrast (optional, off by default).** CLAHE on the lightness channel only (Lab color
-   space), clip limit 2, to bring back texture lost to haze. Off for very dark frames, where it
-   mostly amplifies noise.
-5. **Strength.** `out = original + s · (corrected − original)`, with s from 0 to 1 on the app
-   slider, default 0.8.
+**Two modes, and that's the blind test's question** ("does a mask-based workflow beat one-tap
+correction?"):
 
-**Variants** (`color.correct(img, mask, mode=...)`):
-
-| Mode | Where the statistics come from | Role |
+| Mode | What it does | Photographer analogue |
 | --- | --- | --- |
-| `whole` | the entire frame (mask = 1) | baseline: standard auto-correction |
-| `subject` | weighted by the subject mask | **the main method** |
-| `local` | the subject is corrected at full strength, the background blends toward the original | stretch: only if `subject` wins |
+| `whole` | steps 1-4 on the full frame, no mask | one-tap apps |
+| `subject` | steps 1-6: measured on the subject, water treated separately | Lightroom with subject and water masks |
 
-**Tuning:** the defaults (α, gain limits, 0.8 / 0.2 weighting, percentiles) are set by looking at
-a sheet of 12 frames from set A, never from the blind-test frames.
+Frames that Stage 1 sends to the whole frame (scenery, low confidence, no clear subject) get
+`whole`. The `local` stretch mode from the first plan is folded into `subject`.
+
+**Steps** (full resolution, floats in 0-1):
+
+1. **Recover red** (Ancuti et al., 2018; the Resolve channel-mixer trick). Where red is weak
+   and green strong, red is partly rebuilt from green:
+   `R' = R + α · (mean G − mean R) · (1 − R) · G`, α = 1. Blue gets the same in green water.
+   - **Why:** white balance alone can't fix a nearly empty channel; multiplying it just
+     amplifies noise into magenta blotches.
+2. **White balance on likely-gray pixels** (the eyedropper, automated). A provisional gray-world
+   correction is applied, then only the least colorful pixels (lowest 60% by chroma, not
+   near-black or clipped) are averaged, weighted by mask × 0.8 + 0.2 in `subject` mode. Gains
+   are relative to green.
+   - **Only corrections water could have caused:** water removes red, never adds it, so the
+     red gain is at least 1 (at most 3); blue stays within 0.5-3. An orange nudibranch "asks"
+     for less red, which the clamp refuses.
+   - **Why gray pixels:** a gray-world average over a colorful subject would strip its color
+     (risk 1 below). Gray-pixel color constancy is a published family of methods; this is the
+     simplest version.
+3. **Levels** (exposure, whites, blacks). One stretch for all three channels, so it doesn't
+   re-cast the balance: black point at the 0.5th percentile of each pixel's darkest channel,
+   white point at the 99.5th of its brightest, measured on the whole frame.
+4. **Clarity:** light CLAHE on the lightness channel (Lab), clip limit 1.5; skipped on very
+   dark frames, where it mostly amplifies noise. Photographers warn that heavy clarity or
+   dehaze makes water look dirty, so it stays light.
+5. **Subject** (`subject` mode): full gains inside the mask.
+6. **Water** (`subject` mode): outside the mask the gains are applied at half strength (in log
+   terms, g^0.5) so the water stays blue instead of going gray or purple, and it's darkened by
+   5% (which also hides backscatter). Steps 5 and 6 blend through the feathered mask, so there's
+   no seam.
+7. **Strength:** `out = original + s · (corrected − original)`, s from 0 to 1 on the app slider,
+   default 0.8.
+
+**Estimate, then apply.** `color.estimate(img, mask, mode) -> Settings` (compensation amounts,
+gains for subject and water, levels) and `color.apply(img, mask, settings, strength)`. For
+stills that's just `correct()`. For video it allows the editors' approach later: estimate per
+frame, smooth the settings over the clip, apply. No rewrite needed.
+
+**Tuning:** the defaults (α, chroma cut, gain limits, 0.8 / 0.2 weighting, water strength,
+percentiles, CLAHE clip) are set by looking at set A, never at the blind-test frames.
 
 **Checkpoint 2:** a before/after sheet for set A (original | `whole` | `subject`) for you to
-review before anything goes into the app.
+review before anything goes into the app. Colorful subjects (orange or red invertebrates and
+fish) get a specific look.
 
-**Speed:** about 50–100 ms per 1920×1080 frame in numpy. Grad-CAM adds about 0.2 s on the GPU,
+**Speed:** about 50-100 ms per 1920x1080 frame in numpy. Grad-CAM adds about 0.2 s on the GPU,
 or several seconds on CPU.
+
+**Two risks and how they're handled:**
+
+- **Colorful subjects lose their color.** The eyedropper works because people click on
+  something gray; measuring on an orange subject would strip the orange. This would hit
+  invertebrates and colorful fish hardest (turtles, rays and divers are mostly neutral), so it
+  could make subject mode lose the blind test for the wrong reason, and in a public tool it
+  would fail on the most-photographed subjects. Handled by the red clamp and gray-pixel
+  measuring above, a unit test (an orange patch under a blue cast stays orange), a look at
+  colorful set A frames, and per-category blind-test results. In reserve: measure on a ring
+  around the subject (the grown mask minus its core), since sand at the same distance carries
+  the same cast.
+- **Video flicker.** Per-frame settings jump between frames, and subject mode more than whole
+  (the mask moves, and frames crossing the 0.5 confidence gate switch modes). The blind test
+  judges stills, so its result applies to stills only, and the README says so. Handled later by
+  the estimate/apply split: smooth the settings over the clip and blend between modes instead
+  of switching. Video export is out of scope until Nov 23.
+
+**Sources:** [Adobe: underwater photo editing](https://www.adobe.com/learn/lightroom-cc/web/underwater-photo-editing),
+[Lightroom workflow order for underwater photos](https://robertherb.blogspot.com/2025/11/back-to-basics-part-3-ultimate.html),
+[DivePhotoGuide: white balance when editing](https://www.divephotoguide.com/underwater-photography-techniques/article/white-balance-editing-underwater-photos),
+[Blackmagic forum: editing GoPro scuba video](https://forum.blackmagicdesign.com/viewtopic.php?p=429068),
+[Divernet: underwater photo-editing apps](https://divernet.com/scuba-gear/photo-editing-apps/).
 
 ## Stage 3: the app
 
@@ -198,6 +244,7 @@ under white light. So you judge, blind.
 - **The rule, set before the test:** subject-aware counts as better if it wins at least 60% of
   the non-tie votes. The README reports the win rate with its uncertainty (30 votes is small, so
   20/30 is about p = 0.05 against a coin flip).
+- **Stills only:** the result says nothing about video, where subject mode flickers more.
 - **Per-category win rates** go in the README too. A likely finding is that subject-aware helps
   most on close-up animals and divers and least on small fish in wide shots.
 
@@ -211,6 +258,9 @@ known to reward oversaturation. They may appear as a secondary column, labeled a
   - Strength 0 gives back the original.
   - The gain limits hold on an all-blue frame.
   - A mask over a red patch moves the balance differently than the whole frame does.
+  - An orange patch under a blue cast stays orange; the red gain is never below 1.
+  - In `subject` mode the water outside the mask stays blue.
+  - `apply(estimate(...))` equals `correct(...)`.
   - Output is always 0–255 uint8, the same shape as the input.
 - **`locate.py`, on the tiny CPU checkpoint already used in `test_classify.py`:**
   - The heatmap and mask have the image's shape, with values in 0–1.
@@ -414,3 +464,33 @@ divers and scenery use workflows, not agents.
   small (95% intervals about 39-76% vs. 19-59%), so "growing helped" is likely but not proven.
   Weakest: divers (2/5 hit) and rays (2/5), whose fins, tails and limbs reach past the mask;
   invertebrates 4/4 and fish 4/5.
+- **Stage 2 redesigned after looking at photographers' workflows** (Nov 19): white balance on
+  likely-gray pixels, a physical clamp (red gain at least 1), water kept blue at half strength
+  outside the mask, and an estimate/apply split for future video. `local` folded into
+  `subject`. See Stage 2.
+- **The mask measures; color finds the water** (Nov 19, first set A sheet). Painting with the
+  Grad-CAM mask (full correction inside, half outside) showed the mask as a milky blob around
+  small animals in open water (#4153, #8228, #12608): the grown mask holds a lot of water, and
+  that water got the full warm correction. Lightroom's masks follow real edges; ours doesn't.
+  Now the mask only steers the white balance measurement, and water is found by color (the
+  median of the least red 30% of pixels outside the mask; pixels near it count as water, inside
+  the mask or not), like Lightroom's color-range and "Select Water" masks.
+- **Red amount 0.8** (Nov 20). Full red correction looked too warm on set A (orange sand, warm
+  reef); the red recovery and red gain compound. `RED_AMOUNT` scales both back (the red gain is
+  still never below 1). Compared 0.7 / 0.75 / 0.8 / 0.85 / 1.0; 0.75 and 0.8 were hard to tell
+  apart, and 0.8 is the smaller change. Photographers also leave a little of the cool cast.
+- **Finish: contrast and sharpening, on trial** (Nov 20). A gentle S-curve and an unsharp mask,
+  both on lightness only, the sharpening masked to real edges (Lightroom's "Masking") so flat
+  water, compression blocks and backscatter aren't sharpened. Same in both modes, so the blind
+  test still compares only where the correction is measured. Light (0.1, 0.4) vs. medium (0.2,
+  0.8) rendered on set A.
+- **Shallow frames get less correction, on trial** (Nov 20). Near the surface the water hasn't
+  taken the red yet, so correcting as if deep made red things and the sunlit surface glare
+  (#12608). "Red left" (95th percentile of red / green) separates them on set A: deep frames
+  0.23-0.67, shallow ones 0.83-1.63. The whole correction scales from full at 0.7 to 30% at 1.0
+  and above.
+- **Stage 2 defaults locked** (Nov 20, checkpoint 2): red amount 0.8, medium finish (contrast
+  0.2, sharpening 0.8), shallow rule on. Some frames still look off to me; tuning further, or
+  learning a correction instead of hand-built steps, would take more time than is left before
+  Nov 23. Noted as a limitation for the README, and the blind test measures where it stands.
+

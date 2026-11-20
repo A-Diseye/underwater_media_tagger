@@ -1,10 +1,13 @@
-"""Contact sheets for checking Grad-CAM by eye (docs/color_plan.md, checkpoint 1).
+"""Contact sheets for checking Grad-CAM and color correction by eye (docs/color_plan.md).
 
-Each frame appears twice: as it is, and with the heatmap (red = most evidence for the tag) and
-the subject mask's outline (white) on top. The caption gives the tag, confidence, and whether
-the subject or the whole frame would steer the color correction.
+Checkpoint 1 (default): each frame appears twice, as it is and with the heatmap (red = most
+evidence for the tag) and the subject mask's outline (white) on top. The caption gives the tag,
+confidence, and whether the subject or the whole frame would steer the color correction.
 
-Run with:  uv run python -m training.color_sheets --set A [--per-category 5]
+Checkpoint 2 (--correct): each frame appears three times: original | whole-frame correction |
+subject-aware correction. Set A only, since B and C are for scoring.
+
+Run with:  uv run python -m training.color_sheets --set A [--per-category 5] [--correct]
 """
 
 from __future__ import annotations
@@ -17,21 +20,53 @@ import cv2
 import numpy as np
 from PIL import Image
 
-from tagger import classify, color_sets, locate, store
+from tagger import classify, color, color_sets, locate, store
 from tagger.locate import MIN_CONFIDENCE, Located, Locator, overlay
 
 OUT_DIR = Path("data/color")
 PANEL_W = 400
 
 
-def cell(rgb: np.ndarray, found: Located, caption: str) -> np.ndarray:
-    h = round(rgb.shape[0] * PANEL_W / rgb.shape[1])
-    left = cv2.resize(rgb, (PANEL_W, h), interpolation=cv2.INTER_AREA)
-    right = cv2.resize(overlay(rgb, found), (PANEL_W, h), interpolation=cv2.INTER_AREA)
-    bar = np.full((28, 2 * PANEL_W + 6, 3), 255, np.uint8)
-    cv2.putText(bar, caption, (6, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1, cv2.LINE_AA)
+def panels(images: list[np.ndarray], caption: str) -> np.ndarray:
+    """Images side by side at PANEL_W each, under a caption bar."""
+    h = round(images[0].shape[0] * PANEL_W / images[0].shape[1])
+    small = [cv2.resize(im, (PANEL_W, h), interpolation=cv2.INTER_AREA) for im in images]
     gap = np.full((h, 6, 3), 255, np.uint8)
-    return np.vstack([bar, np.hstack([left, gap, right])])
+    row = [small[0]]
+    for im in small[1:]:
+        row += [gap, im]
+    body = np.hstack(row)
+    bar = np.full((28, body.shape[1], 3), 255, np.uint8)
+    cv2.putText(bar, caption, (6, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1, cv2.LINE_AA)
+    return np.vstack([bar, body])
+
+
+def cell(rgb: np.ndarray, found: Located, caption: str) -> np.ndarray:
+    return panels([rgb, overlay(rgb, found)], caption)
+
+
+def outline(rgb: np.ndarray, found: Located) -> np.ndarray:
+    """A thin outline of the subject mask, so the sheet shows what steered the correction."""
+    out = rgb.copy()
+    if found.has_subject:
+        edge = (found.mask >= 0.5).astype(np.uint8)
+        contours, _ = cv2.findContours(edge, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        cv2.drawContours(out, contours, -1, (255, 255, 255), max(1, rgb.shape[1] // 600))
+    return out
+
+
+def corrections(rgb: np.ndarray, found: Located) -> dict[str, np.ndarray]:
+    """The frame as it is and both corrections, at full resolution."""
+    mask = found.mask if found.has_subject else None
+    return {
+        "original": rgb,
+        "whole": color.correct(rgb, mode=color.WHOLE),
+        "subject": color.correct(rgb, mask, color.SUBJECT),
+    }
+
+
+def correction_cell(views: dict[str, np.ndarray], found: Located, caption: str) -> np.ndarray:
+    return panels([views["original"], views["whole"], outline(views["subject"], found)], caption)
 
 
 def sheet(cells: list[np.ndarray], columns: int = 2) -> np.ndarray:
@@ -62,12 +97,35 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--diver-threshold", type=float, help="Override DIVER_THRESHOLD.")
     parser.add_argument("--grow", type=float, help="Override locate.GROW.")
     parser.add_argument("--bridge", type=float, help="Override locate.BRIDGE (0 = off).")
+    parser.add_argument("--correct", action="store_true", help="Before/after sheet (set A).")
+    parser.add_argument("--red", type=float, help="Override color.RED_AMOUNT (set A).")
+    parser.add_argument(
+        "--finish", choices=tuple(color.FINISHES), help="Contrast and sharpening (set A)."
+    )
+    parser.add_argument(
+        "--no-shallow", action="store_true", help="Full correction near the surface too."
+    )
+    parser.add_argument(
+        "--files", action="store_true", help="With --correct: also save each view full size."
+    )
     parser.add_argument("--out", type=Path, default=OUT_DIR)
     args = parser.parse_args(argv)
 
     tuning = (args.min_peak, args.threshold, args.diver_threshold, args.grow, args.bridge)
     if args.set != "A" and any(v is not None for v in tuning):
         parser.error("mask settings are tuned on set A only")
+    if args.set != "A" and (args.correct or args.red is not None or args.finish or args.no_shallow):
+        parser.error("correction defaults are tuned on set A only")
+    if args.red is not None:
+        color.RED_AMOUNT = args.red
+    if args.finish:
+        color.CONTRAST, color.SHARPEN = color.FINISHES[args.finish]
+    look = next((k for k, v in color.FINISHES.items() if v == (color.CONTRAST, color.SHARPEN)), "")
+    look = "" if look in ("", "none") else f"_{look}"  # sharpened files say so in their name
+    if args.no_shallow:
+        color.SHALLOW_SCALING = False
+    if color.SHALLOW_SCALING:
+        look += "_shallow"
     if args.min_peak is not None:
         locate.MIN_PEAK = args.min_peak
     if args.threshold is not None:
@@ -92,7 +150,20 @@ def main(argv: list[str] | None = None) -> None:
         found = locator.locate(img, r["label"], r["confidence"])
         what = "subject" if found.has_subject else f"whole frame ({found.reason})"
         caption = f"#{r['image_id']} {r['trip']} | {r['label']} {r['confidence']:.2f} | {what}"
-        cells.append(cell(np.asarray(img), found, caption))
+        if args.correct:
+            caption += "   [original | whole | subject]"
+        if not args.correct:
+            cells.append(cell(np.asarray(img), found, caption))
+            continue
+        views = corrections(np.asarray(img), found)
+        cells.append(correction_cell(views, found, caption))
+        if args.files:
+            folder = args.out / f"color_set_A_red{color.RED_AMOUNT}{look}"
+            folder.mkdir(parents=True, exist_ok=True)
+            for view, rgb in views.items():
+                red = f"{color.RED_AMOUNT:g}".removeprefix("0")  # 0.7 -> .7, 1.0 -> 1
+                name = f"{r['image_id']}_{r['label']}_{view}_{red}{look}.jpg"
+                Image.fromarray(rgb).save(folder / name, quality=92)
     per_frame = (time.perf_counter() - start) / max(len(rows), 1)
     args.out.mkdir(parents=True, exist_ok=True)
     tag = (
@@ -101,8 +172,13 @@ def main(argv: list[str] | None = None) -> None:
         if args.set == "A"
         else ""
     )
-    out = args.out / f"gradcam_set_{args.set}{tag}.jpg"
-    Image.fromarray(sheet(cells)).save(out, quality=88)
+    name = (
+        f"color_set_A_red{color.RED_AMOUNT}{look}"
+        if args.correct
+        else f"gradcam_set_{args.set}{tag}"
+    )
+    out = args.out / f"{name}.jpg"
+    Image.fromarray(sheet(cells, columns=1 if args.correct else 2)).save(out, quality=88)
     print(f"{len(rows)} frames, {per_frame:.2f} s per frame -> {out}")
 
 
