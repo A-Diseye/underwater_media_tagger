@@ -10,6 +10,7 @@ import io
 from pathlib import Path
 
 import color_check_page  # app/ pages (Streamlit adds this folder to the import path)
+import color_test_page
 import filter_check_page
 import labeling_page
 import numpy as np
@@ -404,7 +405,7 @@ def upload_page(conn) -> None:
 
 
 conn = store.connect()
-PAGES = ["Gallery", "Search", "Upload", "Label", "Filter check", "Color check"]
+PAGES = ["Gallery", "Search", "Upload", "Label", "Filter check", "Color check", "Color test"]
 page = st.sidebar.radio("Page", PAGES)
 if page == "Gallery":
     gallery_page(conn)
@@ -416,5 +417,7 @@ elif page == "Label":
     labeling_page.render(conn)
 elif page == "Filter check":
     filter_check_page.render()
-else:
+elif page == "Color check":
     color_check_page.render()
+else:
+    color_test_page.render()
