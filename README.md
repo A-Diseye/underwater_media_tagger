@@ -5,6 +5,18 @@ invertebrates, diver, scenery) and applies color correction tuned to where the s
 
 Work in progress. See `docs/PLAN.md` for the project plan.
 
+## Setup
+
+Requires Python 3.12 and [uv](https://docs.astral.sh/uv/).
+
+```bash
+uv sync            # installs everything, including CUDA PyTorch
+uv run pytest      # run tests
+uv run ruff check . && uv run ruff format --check .
+
+uv run streamlit run app/streamlit_app.py   # app at http://localhost:8501
+```
+
 ## Progress
 
 ### Milestone: my whole dive library tagged by an untrained baseline (Nov 3, 2026)
@@ -515,15 +527,3 @@ The app runs locally by design. Making it public would shift the costs:
   browser before upload, or capping file size.
 - **Security:** user accounts, per-user upload limits, and abuse protection. Today none are
   needed, because the app only accepts connections from my own machine.
-
-## Setup
-
-Requires Python 3.12 and [uv](https://docs.astral.sh/uv/).
-
-```bash
-uv sync            # installs everything, including CUDA PyTorch
-uv run pytest      # run tests
-uv run ruff check . && uv run ruff format --check .
-
-uv run streamlit run app/streamlit_app.py   # app at http://localhost:8501
-```
